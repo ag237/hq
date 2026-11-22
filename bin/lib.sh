@@ -41,7 +41,8 @@ need_profile() {
   if [ "$(cd "$HOME_DIR" 2>/dev/null && pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
     echo "hq: the working directory is \$HOME, which would overwrite your global ~/.claude. Put hq inside a dedicated directory (e.g. ~/work/hq) or set HQ_WORKDIR." >&2; exit 1
   fi
-  mkdir -p "$BRIEFS" "$LOGS" "$MODELS"; [ -e "$BOARD" ] || : > "$BOARD"
+  mkdir -p "$BRIEFS" "$LOGS" "$MODELS"; chmod 700 "$STATE" 2>/dev/null || true   # briefs/logs hold issue text: owner only
+  [ -e "$BOARD" ] || : > "$BOARD"
 }
 
 # Escape a value for use inside a sed s|..|HERE|g replacement (\\, & and the | delimiter).

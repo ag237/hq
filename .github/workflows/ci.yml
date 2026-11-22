@@ -15,6 +15,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y shellcheck tmux
       - run: CI=1 tests/lint.sh
       - run: tests/run.sh
+      - run: tests/secrets.sh
   macos:
     # macOS ships bash 3.2 and BSD tools: this is the portability check
     runs-on: macos-latest
@@ -25,3 +26,4 @@ jobs:
       - run: brew install tmux
       - run: /bin/bash --version | head -1
       - run: tests/run.sh
+      - run: tests/secrets.sh

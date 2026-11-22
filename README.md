@@ -78,7 +78,8 @@ inside this app repo, so personal data can't be committed here by accident. `HQ_
 ## Development and security checks
 - `tests/lint.sh`: shellcheck, bash 3.2/macOS portability, credential and personal-data scan (tree and history), workflow pinning. Optional machine-local `~/.config/hq/denylist` (one regex per line: your names, hosts, internal domains) is checked too and never committed.
 - `tests/run.sh`: end-to-end tests in a sandbox (fake HOME, private tmux server, stub `claude`, local bare remote). Safe to run anywhere.
-- `git config core.hooksPath hooks` enables a pre-push hook that runs both. CI runs them on Linux and macOS. See `SECURITY.md`.
+- `tests/secrets.sh`: secret-disclosure tests: the credential patterns (must-match and must-not-match corpus), proof that secrets in the environment never reach files, process args, tmux, command output or the synced remote, that sync and lint never print a secret they find, and that state and `~/.claude.json` keep owner-only permissions.
+- `git config core.hooksPath hooks` enables a pre-push hook that runs all three. CI runs them on Linux and macOS. See `SECURITY.md`.
 
 ## Notes
 - `<workdir>/.claude/{agents,commands,settings.json}` are generated; edit `claude/` or the profile, then `hq config`. The PM re-reads its own instructions only when restarted.

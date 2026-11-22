@@ -19,7 +19,7 @@ elif [ -n "${CI:-}" ]; then bad "shellcheck not installed"; else echo "  skip  s
 
 echo "portability (bash 3.2 / macOS / no GNU-only tools)"
 PORT='readlink -f|flock|declare -A|mapfile|readarray|\$\{[A-Za-z_]+(,,|\^\^)|date -I|sed -i|grep -P|sed -r|xargs -r|stat -c|\becho -e\b|\bsetsid\b'
-hits="$(for f in $(scripts); do [ "$f" = tests/lint.sh ] && continue; grep -nE "$PORT" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' | sed "s|^|$f:|"; done)"
+hits="$(for f in $(scripts); do [ "$f" = tests/lint.sh ] && continue; grep -nE "$PORT" "$f" | grep -v 'lint:allow' | grep -vE '^[0-9]+:[[:space:]]*#' | sed "s|^|$f:|"; done)"
 [ -z "$hits" ] && ok "no GNU-only or bash 4+ constructs" || bad "non-portable constructs" "$hits"
 
 echo "dangerous constructs"
@@ -35,10 +35,10 @@ echo "secrets"
 # the pattern list itself and this script legitimately contain pattern text
 scan="$(printf '%s\n' "$FILES" | grep -vE '^(secret-patterns\.txt)$')"
 # shellcheck disable=SC2086
-hits="$(printf '%s\n' "$scan" | xargs grep -nIE -f secret-patterns.txt 2>/dev/null | cut -c1-120)"
+hits="$(printf '%s\n' "$scan" | xargs grep -nIE -f secret-patterns.txt 2>/dev/null | cut -d: -f1,2 | sed 's/$/  (matched text withheld)/')"   # file:line only: never print the secret
 [ -z "$hits" ] && ok "no credential-shaped strings in tracked files" || bad "credential-shaped strings" "$hits"
 if git rev-parse --git-dir >/dev/null 2>&1; then
-  hits="$(git log -p --all --no-color 2>/dev/null | grep '^+' | grep -v '^+++' | grep -E -f secret-patterns.txt | cut -c1-120 | head)"
+  n="$(git log -p --all --no-color 2>/dev/null | grep '^+' | grep -v '^+++' | grep -v 'lint:allow' | grep -cE -f secret-patterns.txt)"; hits=""; [ "${n:-0}" = 0 ] || hits="$n added line(s) in history match a credential pattern (text withheld; use git log -p -G to locate)"
   [ -z "$hits" ] && ok "no credential-shaped strings anywhere in git history" || bad "credential-shaped strings in history" "$hits"
 fi
 
