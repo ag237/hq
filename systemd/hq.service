@@ -1,0 +1,16 @@
+[Unit]
+Description=hq: PM + workers (tmux session "hq")
+After=default.target
+
+[Service]
+# Rendered by `hq autostart on` (it fills @HQ_DIR@ and @PATH@). Rebuilds the tmux layout (PM + active
+# workers) once at login/boot. The tmux server and claude sessions live in this unit's cgroup and stay
+# up because of RemainAfterExit.
+Type=oneshot
+RemainAfterExit=yes
+Environment=PATH=@PATH@
+ExecStart=@HQ_DIR@/bin/hq up
+ExecStop=-@HQ_DIR@/bin/hq down
+
+[Install]
+WantedBy=default.target

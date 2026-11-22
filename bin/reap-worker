@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# reap-worker <ISSUE-ID> [--force]
+# Finish a worker for good (PR merged / work complete): remove worktree+branch, close window, mark `done`.
+# The row and session UUID are KEPT, so `hq revive <ISSUE>` can still bring the conversation back.
+set -euo pipefail
+[ $# -ge 1 ] || { echo "usage: reap-worker <ISSUE-ID> [--force]" >&2; exit 2; }
+_s="${BASH_SOURCE[0]}"; while [ -L "$_s" ]; do _d="$(cd "$(dirname "$_s")" && pwd)"; _s="$(readlink "$_s")"; case "$_s" in /*) ;; *) _s="$_d/$_s";; esac; done
+HQ_DIR="$(cd "$(dirname "$_s")/.." && pwd)"; . "$HQ_DIR/bin/lib.sh"; need_profile
+issue=$1 force=${2:-}
+branch="$(printf '%s' "$issue" | tr 'A-Z' 'a-z')"
+row="$(board_row "$issue")"; [ -n "$row" ] || { echo "$issue not on board" >&2; exit 1; }
+IFS=$'\t' read -r _ repo wt _ _ _ <<< "$row"
+
+if [ "$repo" != "-" ] && [ -d "$wt" ]; then
+  repo_dir="$HOME_DIR/$repo"
+  if [ "$force" != --force ]; then
+    if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then echo "worktree has uncommitted changes; use --force" >&2; exit 1; fi
+    git -C "$repo_dir" worktree remove "$wt"
+    git -C "$repo_dir" branch -d "$branch" || { echo "branch $branch not merged locally; re-run with --force if the PR was squash-merged" >&2; exit 1; }
+  else
+    git -C "$repo_dir" worktree remove --force "$wt"
+    git -C "$repo_dir" branch -D "$branch" || true
+  fi
+  "$HQ_DIR/bin/trust-path" --remove "$wt" || true
+fi
+tm kill-window -t "$SESSION:$issue" 2>/dev/null || true
+board_set "$issue" done
+echo "reaped $issue"

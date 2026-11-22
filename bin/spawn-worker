@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# spawn-worker [--plan] [--model <m>] [--read-only] <repo> <ISSUE> "<brief>"     worktree worker (code/IaC changes -> PR)
+# spawn-worker [--read-only] --ops <ISSUE> "<brief>"      ops worker: runs in ~/home, no worktree/branch
+set -euo pipefail
+_s="${BASH_SOURCE[0]}"; while [ -L "$_s" ]; do _d="$(cd "$(dirname "$_s")" && pwd)"; _s="$(readlink "$_s")"; case "$_s" in /*) ;; *) _s="$_d/$_s";; esac; done
+HQ_DIR="$(cd "$(dirname "$_s")/.." && pwd)"; . "$HQ_DIR/bin/lib.sh"; need_profile
+READ_ONLY=0 OPS=0 PLAN=0 MODEL="" args=()
+while [ $# -gt 0 ]; do case "$1" in
+  --read-only) READ_ONLY=1;; --ops) OPS=1;; --plan) PLAN=1;;
+  --model) [ $# -ge 2 ] || { echo "--model needs a value" >&2; exit 2; }; MODEL=$2; shift;;
+  *) args+=("$1");; esac; shift; done
+set -- ${args[@]+"${args[@]}"}
+if [ "$OPS" = 1 ]; then
+  [ $# -eq 2 ] || { echo "usage: spawn-worker [--read-only] --ops <ISSUE> \"<brief>\"" >&2; exit 2; }
+  repo=- issue=$1 brief=$2
+else
+  [ $# -eq 3 ] || { echo "usage: spawn-worker [--read-only] <repo> <ISSUE> \"<brief>\"" >&2; exit 2; }
+  repo=$1 issue=$2 brief=$3
+fi
+branch="$(printf '%s' "$issue" | tr 'A-Z' 'a-z')"
+if [ -n "$(board_row "$issue")" ]; then echo "$issue is already on the board (use: hq revive $issue)" >&2; exit 1; fi
+
+if [ "$repo" = "-" ]; then
+  cwd="$HOME_DIR"
+  mode_text="## MODE: ops (no worktree)
+You run in $HOME_DIR with no worktree or branch. Do the work on the live systems the assignment describes. If you end up needing to change a repo, create your own worktree first: \`git -C $HOME_DIR/<repo> worktree add $WT_ROOT/<repo>/$issue -b $branch\` and work only there; never edit a repo's main checkout. Record every live change you make in your tracker comment."
+else
+  repo_dir="$HOME_DIR/$repo"
+  [ -d "$repo_dir/.git" ] || { echo "no such repo: $repo_dir" >&2; exit 1; }
+  cwd="$WT_ROOT/$repo/$issue"
+  [ -d "$cwd" ] || make_worktree "$repo_dir" "$cwd" "$branch"
+  "$HQ_DIR/bin/trust-path" "$cwd" "$repo_dir"
+  mode_text="## MODE: worktree
+Work ONLY in $cwd (branch $branch). Never touch the main checkout of any repo. Commit to the branch, push, and open a PR. $USER_NAME merges."
+fi
+if [ "$PLAN" = 1 ]; then
+  mode_text="$mode_text
+
+## PLAN FIRST
+You start in plan mode. Investigate, then present a plan (steps, risks, rollback, how you will verify) and wait for $USER_NAME's approval before changing anything. Post the approved plan as a tracker comment."
+fi
+if [ "$READ_ONLY" = 1 ]; then
+  mode_text="$mode_text
+
+## READ-ONLY (overrides everything above)
+Investigation only. Do NOT change any cluster/host/repo state, commit, push, or open PRs. Report findings in a tracker comment and via SendMessage to pm."
+fi
+
+{ render < "$HQ_DIR/worker-brief.md"
+  [ -f "$PROFILE_DIR/worker-extra.md" ] && { printf '\n'; render < "$PROFILE_DIR/worker-extra.md"; }
+  printf '\n---\n\n# Assignment\n\nIssue: %s\n\n%s\n\n%s\n' "$issue" "$mode_text" "$brief"
+} > "$BRIEFS/$issue.md"
+
+[ "$PLAN" = 1 ] && [ -z "$MODEL" ] && MODEL=opusplan   # opus while planning, sonnet once executing
+[ -n "$MODEL" ] && printf '%s\n' "$MODEL" > "$MODELS/$issue"
+uuid="$(new_uuid)"
+printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$issue" "$repo" "$cwd" "$uuid" active "$(now)" >> "$BOARD"
+pflag=""; [ "$PLAN" = 1 ] && pflag=" --permission-mode plan"   # first start only: on resume it would re-enter plan mode after approval
+cmd="claude$(worker_model_flag "$issue")$pflag --session-id $uuid -n $issue 'Read $BRIEFS/$issue.md and follow it.'"
+if tm has-session -t "$SESSION" 2>/dev/null; then tm new-window -d -t "$SESSION:" -n "$issue" -c "$cwd" "$cmd"
+else tm new-session -d -s "$SESSION" -n "$issue" -c "$cwd" "$cmd"; fi
+echo "spawned $issue ($([ "$repo" = - ] && echo ops || echo "worktree $cwd")) session $uuid, tmux $SESSION:$issue"

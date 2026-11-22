@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# trust-path <worktree> <main-repo>   mark a worktree trusted in ~/.claude.json (only if <main-repo> is ALREADY trusted)
+# trust-path --remove <worktree>      drop the entry again (reap-worker)
+# ~/.claude.json is shared by every claude session, so each write is verified and retried if another
+# session's write clobbered ours. CLAUDE_JSON overrides the file path (tests).
+set -euo pipefail
+CJ="${CLAUDE_JSON:-$HOME/.claude.json}"
+if [ "${1:-}" = --remove ]; then
+  [ $# -eq 2 ] || { echo "usage: trust-path --remove <worktree>" >&2; exit 2; }
+  mode=remove; wt="$2"; repo=-
+else
+  [ $# -eq 2 ] || { echo "usage: trust-path <worktree> <main-repo>" >&2; exit 2; }
+  mode=add; wt="$1"; repo="$2"
+fi
+python3 -I - "$CJ" "$mode" "$wt" "$repo" <<'PY'
+import json, os, sys, tempfile, time
+path, mode, wt, repo = sys.argv[1:5]
+wt, repo = os.path.realpath(wt), (os.path.realpath(repo) if repo != "-" else repo)
+def load():
+    with open(path) as f: return json.load(f)
+def has(d): return bool(d.get("projects", {}).get(wt, {}).get("hasTrustDialogAccepted"))
+d = load()
+if mode == "add":
+    if not d.get("projects", {}).get(repo, {}).get("hasTrustDialogAccepted"):
+        print(f"trust-path: {repo} is not trusted; leaving {wt} alone", file=sys.stderr); sys.exit(0)
+for attempt in range(5):
+    d = load()
+    if mode == "add":
+        if has(d): sys.exit(0)
+        d.setdefault("projects", {}).setdefault(wt, {})["hasTrustDialogAccepted"] = True
+    else:
+        if wt not in d.get("projects", {}): sys.exit(0)
+        d["projects"].pop(wt)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".claude.json.")
+    with os.fdopen(fd, "w") as f: json.dump(d, f, indent=2)
+    os.chmod(tmp, os.stat(path).st_mode & 0o777)
+    os.replace(tmp, path)
+    time.sleep(0.3)                     # let a racing writer land, then verify our change survived
+    if has(load()) == (mode == "add"): sys.exit(0)
+print("trust-path: change did not stick after retries", file=sys.stderr); sys.exit(1)
+PY
