@@ -1,4 +1,5 @@
-# shared helpers; source after setting HQ_DIR
+# shellcheck shell=bash disable=SC2034
+# shared helpers; source after setting HQ_DIR (SC2034: variables are consumed by the scripts that source this)
 HQ_CONF="${XDG_CONFIG_HOME:-$HOME/.config}/hq"
 # shellcheck disable=SC1091
 [ -f "$HQ_CONF/env" ] && . "$HQ_CONF/env"     # machine-local: may set HQ_PROFILE, HQ_WORKDIR, HQ_STATE_DIR, HQ_SYNC
@@ -43,12 +44,24 @@ need_profile() {
   mkdir -p "$BRIEFS" "$LOGS" "$MODELS"; [ -e "$BOARD" ] || : > "$BOARD"
 }
 
+# Escape a value for use inside a sed s|..|HERE|g replacement (\\, & and the | delimiter).
+sedq() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
+
 # Fill {{placeholders}} in a template read from stdin.
 render() {
-  sed -e "s|{{HQ_DIR}}|$HQ_DIR|g" -e "s|{{HQ_BIN}}|$HQ_BIN|g" -e "s|{{STATE}}|$STATE|g" \
-      -e "s|{{HOME_DIR}}|$HOME_DIR|g" -e "s|{{MEMORY_DIR}}|$MEMORY_DIR|g" \
-      -e "s|{{TEAM}}|$TEAM|g" -e "s|{{ISSUE_EXAMPLE}}|$ISSUE_EXAMPLE|g" -e "s|{{PROFILE}}|$PROFILE|g" -e "s|{{USER_NAME}}|$USER_NAME|g"
+  sed -e "s|{{HQ_DIR}}|$(sedq "$HQ_DIR")|g" -e "s|{{HQ_BIN}}|$(sedq "$HQ_BIN")|g" -e "s|{{STATE}}|$(sedq "$STATE")|g" \
+      -e "s|{{HOME_DIR}}|$(sedq "$HOME_DIR")|g" -e "s|{{MEMORY_DIR}}|$(sedq "$MEMORY_DIR")|g" \
+      -e "s|{{TEAM}}|$(sedq "$TEAM")|g" -e "s|{{ISSUE_EXAMPLE}}|$(sedq "$ISSUE_EXAMPLE")|g" -e "s|{{PROFILE}}|$(sedq "$PROFILE")|g" \
+      -e "s|{{USER_NAME}}|$(sedq "$USER_NAME")|g"
 }
+
+# Input validation. Issue ids and repo names end up in file paths, branch names, tmux window names and shell command
+# strings, and they can come from tracker text via the PM, so only a conservative character set is accepted.
+valid_issue() { case "$1" in ""|-*|*[!A-Za-z0-9._-]*|.*) return 1;; esac; [ "${#1}" -le 64 ]; }
+valid_repo() { [ "$1" = "-" ] && return 0; case "$1" in ""|-*|.*|*[!A-Za-z0-9._-]*) return 1;; esac; [ "${#1}" -le 100 ]; }
+need_issue() { valid_issue "$1" || { echo "hq: invalid issue id '$1' (letters, digits, . _ - only; max 64)" >&2; exit 2; }; }
+need_repo() { valid_repo "$1" || { echo "hq: invalid repo name '$1' (letters, digits, . _ - only, not starting with . or -)" >&2; exit 2; }; }
+q() { printf '%q' "$1"; }          # shell-quote a value that is embedded in a tmux command string
 
 # ---- portability helpers (no GNU-only tools) ----
 now() { date +%Y-%m-%dT%H:%M:%S%z; }
@@ -101,9 +114,9 @@ start_worker() { # <issue> <repo> <cwd> <uuid>
   [ -d "$cwd" ] || { echo "hq: $cwd missing for $issue" >&2; return 1; }
   [ "$repo" = "-" ] || "$HQ_DIR/bin/trust-path" "$cwd" "$HOME_DIR/$repo" || true
   if transcript_exists "$cwd" "$uuid"; then
-    cmd="claude$(worker_model_flag "$issue") --resume $uuid -n $issue"
+    cmd="claude$(worker_model_flag "$issue") --resume $uuid -n $(q "$issue")"
   else
-    cmd="claude$(worker_model_flag "$issue") --session-id $uuid -n $issue 'Your session was rebuilt and has no saved conversation. Re-read $BRIEFS/$issue.md, check git status/log (if you have a worktree) and the tracker issue comments, then continue.'"
+    cmd="claude$(worker_model_flag "$issue") --session-id $uuid -n $(q "$issue") $(q "Your session was rebuilt and has no saved conversation. Re-read $BRIEFS/$issue.md, check git status/log (if you have a worktree) and the tracker issue comments, then continue.")"
   fi
   if tm has-session -t "$SESSION" 2>/dev/null; then
     tm new-window -d -t "$SESSION:" -n "$issue" -c "$cwd" "$cmd"

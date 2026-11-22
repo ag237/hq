@@ -17,6 +17,7 @@ else
   [ $# -eq 3 ] || { echo "usage: spawn-worker [--read-only] <repo> <ISSUE> \"<brief>\"" >&2; exit 2; }
   repo=$1 issue=$2 brief=$3
 fi
+need_issue "$issue"; need_repo "$repo"
 branch="$(printf '%s' "$issue" | tr 'A-Z' 'a-z')"
 if [ -n "$(board_row "$issue")" ]; then echo "$issue is already on the board (use: hq revive $issue)" >&2; exit 1; fi
 
@@ -56,7 +57,7 @@ fi
 uuid="$(new_uuid)"
 printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$issue" "$repo" "$cwd" "$uuid" active "$(now)" >> "$BOARD"
 pflag=""; [ "$PLAN" = 1 ] && pflag=" --permission-mode plan"   # first start only: on resume it would re-enter plan mode after approval
-cmd="claude$(worker_model_flag "$issue")$pflag --session-id $uuid -n $issue 'Read $BRIEFS/$issue.md and follow it.'"
+cmd="claude$(worker_model_flag "$issue")$pflag --session-id $uuid -n $(q "$issue") $(q "Read $BRIEFS/$issue.md and follow it.")"
 if tm has-session -t "$SESSION" 2>/dev/null; then tm new-window -d -t "$SESSION:" -n "$issue" -c "$cwd" "$cmd"
 else tm new-session -d -s "$SESSION" -n "$issue" -c "$cwd" "$cmd"; fi
 echo "spawned $issue ($([ "$repo" = - ] && echo ops || echo "worktree $cwd")) session $uuid, tmux $SESSION:$issue"

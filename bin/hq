@@ -144,8 +144,9 @@ Next:
 NEXT
 }
 
+xmlq() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
 require_row() { # <issue> -> sets repo cwd uuid status
-  local row; row="$(board_row "$1")"
+  need_issue "$1"; local row; row="$(board_row "$1")"
   [ -n "$row" ] || { echo "hq: no board row with exact id '$1'. Try: hq find <term>" >&2; exit 3; }
   IFS=$'\t' read -r _ repo cwd uuid status _ <<< "$row"
 }
@@ -162,7 +163,7 @@ case "${1:-up}" in
   down) tm kill-session -t "$SESSION" 2>/dev/null && echo "hq: down" || echo "hq: not running" ;;
   park)
     [ $# -eq 2 ] || { echo "usage: hq park <ISSUE>" >&2; exit 2; }
-    require_row "$2"; [ "$status" != done ] || { echo "$2 is done, not parked" >&2; exit 1; }
+    require_row "$2"; [ "$status" != "done" ] || { echo "$2 is done, not parked" >&2; exit 1; }
     tm kill-window -t "$SESSION:$2" 2>/dev/null || true; board_set "$2" parked; echo "parked $2" ;;
   revive)
     [ $# -eq 2 ] || { echo "usage: hq revive <ISSUE>   (exact id; use 'hq find' for fuzzy)" >&2; exit 2; }
@@ -218,7 +219,8 @@ PY
     ;;
   adopt)
     [ $# -ge 3 ] || { echo "usage: hq adopt <uuid> <ISSUE> [cwd]" >&2; exit 2; }
-    uuid=$2 issue=$3 cwd=${4:-}
+    uuid=$2 issue=$3 cwd=${4:-}; need_issue "$issue"
+    case "$uuid" in *[!0-9a-fA-F-]*|"") echo "hq: invalid session id" >&2; exit 2;; esac
     [ -z "$(board_row "$issue")" ] || { echo "$issue already on board" >&2; exit 1; }
     f="$(ls "$PROJ_DIR"/*/"$uuid".jsonl 2>/dev/null | head -1)"; [ -n "$f" ] || { echo "no transcript for $uuid" >&2; exit 1; }
     [ -n "$cwd" ] || cwd="$(python3 -I -c "
@@ -254,8 +256,8 @@ for l in open(sys.argv[1]):
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>Label</key><string>net.hq.up</string>
-<key>ProgramArguments</key><array><string>$HQ_DIR/bin/hq</string><string>up</string></array>
-<key>EnvironmentVariables</key><dict><key>PATH</key><string>$PATH</string></dict>
+<key>ProgramArguments</key><array><string>$(xmlq "$HQ_DIR")/bin/hq</string><string>up</string></array>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>$(xmlq "$PATH")</string></dict>
 <key>RunAtLoad</key><true/>
 </dict></plist>
 PLIST

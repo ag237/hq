@@ -11,7 +11,7 @@ SYNC_REPO="$(git -C "$STATE" rev-parse --show-toplevel 2>/dev/null)" || { echo "
 if [ "$(cd "$SYNC_REPO" && pwd -P)" = "$(cd "$HQ_DIR" && pwd -P)" ]; then
   echo "sync: state lives inside the hq app repo; refusing to commit it there. Move it to a separate private repo (hq init --state-repo DIR)." >&2; exit 1
 fi
-cd "$SYNC_REPO"
+cd "$SYNC_REPO" || exit 1
 LOCK="$(git rev-parse --absolute-git-dir)/hq-sync.lock.d"   # inside .git so it is never committed; mkdir is an atomic portable lock
 if ! mkdir "$LOCK" 2>/dev/null; then
   pid="$(cat "$LOCK/pid" 2>/dev/null || true)"
@@ -24,6 +24,11 @@ branch="$(git branch --show-current)"; [ -n "$branch" ] || { echo "sync: detache
 
 if [ -n "$(git status --porcelain)" ]; then
   git add -A
+  # never push credentials: scan what is about to be committed (briefs and logs are free text)
+  if git diff --cached -U0 --no-color | grep '^+' | grep -v '^+++' | grep -qE -f "$HQ_DIR/secret-patterns.txt"; then
+    git reset -q
+    echo "sync: refusing to commit: staged changes look like they contain a credential (see $HQ_DIR/secret-patterns.txt). Remove it, then re-run." >&2; exit 1
+  fi
   git commit -q -m "hq: auto-sync $(date +%Y-%m-%dT%H:%M:%S%z)" -m "Changed: $(git diff --cached --name-only | head -8 | tr '\n' ' ')" \
     || { echo "sync: commit failed" >&2; exit 1; }
 fi

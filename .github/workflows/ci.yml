@@ -1,0 +1,27 @@
+name: ci
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck tmux
+      - run: CI=1 tests/lint.sh
+      - run: tests/run.sh
+  macos:
+    # macOS ships bash 3.2 and BSD tools: this is the portability check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: brew install tmux
+      - run: /bin/bash --version | head -1
+      - run: tests/run.sh

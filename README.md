@@ -75,6 +75,11 @@ session if the transcript is gone), and re-arms `/standup` + `/loop /checkin`. `
 one pull-rebase retry, exit 2 = needs a human. The PM runs it from `/checkin` and `/eod`. It refuses to run if the state lives
 inside this app repo, so personal data can't be committed here by accident. `HQ_SYNC=off` disables it. Authentication is whatever git already uses on that machine.
 
+## Development and security checks
+- `tests/lint.sh`: shellcheck, bash 3.2/macOS portability, credential and personal-data scan (tree and history), workflow pinning. Optional machine-local `~/.config/hq/denylist` (one regex per line: your names, hosts, internal domains) is checked too and never committed.
+- `tests/run.sh`: end-to-end tests in a sandbox (fake HOME, private tmux server, stub `claude`, local bare remote). Safe to run anywhere.
+- `git config core.hooksPath hooks` enables a pre-push hook that runs both. CI runs them on Linux and macOS. See `SECURITY.md`.
+
 ## Notes
 - `<workdir>/.claude/{agents,commands,settings.json}` are generated; edit `claude/` or the profile, then `hq config`. The PM re-reads its own instructions only when restarted.
 - Notifications use the `PushNotification` tool (Remote Control); no extra service.
