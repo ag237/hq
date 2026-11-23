@@ -264,15 +264,24 @@ PY
     case "$uuid" in *[!0-9a-fA-F-]*|"") echo "hq: invalid session id" >&2; exit 2;; esac
     [ -z "$(board_row "$issue")" ] || { echo "$issue already on board" >&2; exit 1; }
     f="$(ls "$PROJ_DIR"/*/"$uuid".jsonl 2>/dev/null | head -1)"; [ -n "$f" ] || { echo "no transcript for $uuid" >&2; exit 1; }
-    [ -n "$cwd" ] || cwd="$(python3 -I -c "
+    # first and last cwd in the transcript: it is stored under the FIRST (where the session started), so that is what the board keeps
+    IFS=$'\t' read -r first_cwd last_cwd <<< "$(python3 -I -c "
 import json,sys
+first = last = ''
 for l in open(sys.argv[1]):
-    try: c=json.loads(l).get('cwd')
+    try: c = json.loads(l).get('cwd')
     except ValueError: continue
-    if c: print(c); break" "$f")"
+    if c:
+        first = first or c; last = c
+print(first + '\t' + last)" "$f")"
+    [ -n "$cwd" ] || cwd="$first_cwd"
     [ -d "$cwd" ] || { echo "cwd '$cwd' does not exist; pass one explicitly" >&2; exit 1; }
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$issue" - "$cwd" "$uuid" parked "$(now)" >> "$BOARD"
-    echo "adopted $uuid as $issue (parked, cwd $cwd). Next: hq revive $issue" ;;
+    echo "adopted $uuid as $issue (parked, cwd $cwd). Next: hq revive $issue"
+    if [ -n "$last_cwd" ] && [ "$last_cwd" != "$first_cwd" ]; then
+      echo "hq: warning: this session started in $first_cwd but later moved to $last_cwd (a worktree?)." >&2
+      echo "    It will resume in $cwd, because its transcript is found by that directory. After 'hq revive $issue', tell the worker to cd to $last_cwd." >&2
+    fi ;;
   autostart)
     act="${2:-status}"
     if [ "$act" = show ]; then   # print what `on` would install (no side effects); target defaults to this OS

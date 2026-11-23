@@ -82,6 +82,16 @@ check "reap removes worktree" "$SB/work/hq/bin/reap-worker" WT-2
 check "reap removed trust entry" bash -c '! grep -q WT-2 "$1"' _ "$CLAUDE_JSON"
 check "reap keeps the row as done" grep -q 'WT-2.*done' "$STATE_REPO/state/$HOST/board.tsv"
 
+echo "adopt"
+mkdir -p "$SB/work/moved-to"
+ENC="$(printf '%s' "$SB/work" | sed 's/[^a-zA-Z0-9]/-/g')"; mkdir -p "$HOME/.claude/projects/$ENC"
+U1=22222222-2222-4222-8222-222222222222; U2=33333333-3333-4333-8333-333333333333
+printf '{"type":"user","cwd":"%s"}\n{"type":"user","cwd":"%s"}\n' "$SB/work" "$SB/work/moved-to" > "$HOME/.claude/projects/$ENC/$U1.jsonl"
+printf '{"type":"user","cwd":"%s"}\n{"type":"user","cwd":"%s"}\n' "$SB/work" "$SB/work" > "$HOME/.claude/projects/$ENC/$U2.jsonl"
+check "adopt a session that moved: warns about the last cwd" bash -c '"$1" adopt "$2" MOVED-1 2>&1 >/dev/null | grep -q "later moved to $3"' _ "$HQ" "$U1" "$SB/work/moved-to"
+check "adopt keeps the first cwd on the board (transcript is found by it)" awk -F'\t' -v c="$SB/work" -v u="$U1" '$1=="MOVED-1" && $3==c && $4==u {f=1} END{exit !f}' "$STATE_REPO/state/$HOST/board.tsv"
+check "adopt of a session that never moved: no warning" bash -c '[ -z "$("$1" adopt "$2" STAY-1 2>&1 >/dev/null)" ]' _ "$HQ" "$U2"
+
 echo "autostart (launchd plist checked with plistlib; launchctl itself needs a real Mac)"
 PL="$SB/plist.xml"
 check "autostart show launchd" bash -c '"$1" autostart show launchd > "$2" 2> "$3"' _ "$HQ" "$PL" "$SB/plist.err"
