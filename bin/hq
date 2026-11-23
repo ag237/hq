@@ -91,18 +91,27 @@ doctor_sync() { # when sync is on, check that git can push to origin unattended 
   if sync_check "$repo"; then echo "  ok       sync: git can reach and push to origin without a prompt"; else echo "  FAILED   sync: see above"; return 1; fi
 }
 
+ask_default() { # <question> <default>: read a line from the terminal (stderr carries the prompt so stdout is just the answer)
+  local reply=""
+  printf '%s [%s]: ' "$1" "$2" >&2; IFS= read -r reply || true
+  printf '%s' "${reply:-$2}"
+}
+
 init_cmd() {
-  local name=work team=CHANGEME workdir="" statedir="" staterepo="" remote="" username="" sync="" force=0 pdir workd
+  local name=work team=CHANGEME workdir="" statedir="" staterepo="" remote="" username="" issue_example="" sync="" force=0 prompt=0 pdir workd
   while [ $# -gt 0 ]; do case "$1" in
     --name) name=$2; shift 2;; --team) team=$2; shift 2;; --workdir) workdir=$2; shift 2;;
-    --state-dir) statedir=$2; shift 2;; --state-repo) staterepo=$2; shift 2;; --remote) remote=$2; shift 2;; --user-name) username=$2; shift 2;; --sync) sync=$2; shift 2;; --force) force=1; shift;;
+    --state-dir) statedir=$2; shift 2;; --state-repo) staterepo=$2; shift 2;; --remote) remote=$2; shift 2;; --user-name) username=$2; shift 2;; --issue-example) issue_example=$2; shift 2;; --prompt) prompt=1; shift;; --sync) sync=$2; shift 2;; --force) force=1; shift;;
     -h|--help) cat <<'USAGE'
-hq init [--name NAME] [--team KEY] [--user-name N] [--workdir DIR] [--state-repo DIR [--remote URL] | --state-dir DIR] [--sync on|off] [--force]
+hq init [--name NAME] [--team KEY] [--user-name N] [--issue-example ID] [--prompt] [--workdir DIR] [--state-repo DIR [--remote URL] | --state-dir DIR] [--sync on|off] [--force]
   --name       profile name (default: work). Created locally at ~/.config/hq/profiles/NAME from profiles/_template
   --team       issue-tracker team key used in prompts (default: CHANGEME)
   --workdir    directory that holds your project repos and where the PM runs (default: the parent of this hq dir)
   --state-dir  where board/briefs/logs live (default: ~/.local/state/hq, outside the repo)
-  --user-name  how the PM addresses you (default: git user.name, else $USER)
+  --user-name  how the PM addresses you (default: first word of git user.name, else $USER)
+  --issue-example  an issue id used as the example in prompts (default: <TEAM>-123)
+  --prompt     ask for the user name and example issue id (default: asks when stdin is a terminal and a flag is missing,
+               and only when a new profile is being created); without a terminal the defaults are used
   --state-repo DIR  keep profiles + state in a separate PRIVATE git repo at DIR (created if needed; profiles in DIR/profiles,
                state in DIR/state/<hostname>); sync is on once it has an origin. Add the origin with --remote URL.
   --sync       on|off: whether bin/sync pushes the state repo to its origin (default: on if --state-repo has an origin, else off)
@@ -116,6 +125,20 @@ USAGE
     echo "hq init: workdir would be \$HOME (it would overwrite your global ~/.claude). Clone hq into a dedicated directory, e.g. ~/work/hq, or pass --workdir DIR." >&2; exit 1
   fi
   [ -d "$workd" ] || { echo "hq init: workdir '$workd' does not exist" >&2; exit 1; }
+  # Values that end up in profile.env (sourced by bash): validate before anything is created, then ask for what the flags left out.
+  valid_issue "$team" || { echo "hq init: invalid --team '$team' (letters, digits, . _ - only)" >&2; exit 2; }
+  local dflt_user dflt_issue probe="$HQ_CONF/profiles/$name"
+  [ -z "$staterepo" ] || probe="$staterepo/profiles/$name"
+  dflt_user="$(git config user.name 2>/dev/null | awk '{print $1}')"; [ -n "$dflt_user" ] || dflt_user="${USER:-CHANGEME}"
+  dflt_issue="$team-123"
+  if { [ "$prompt" = 1 ] || [ -t 0 ]; } && { [ "$force" = 1 ] || [ ! -d "$probe" ]; }; then
+    [ -n "$username" ] || username="$(ask_default "What should the PM call you?" "$dflt_user")"
+    [ -n "$issue_example" ] || issue_example="$(ask_default "An example issue id (used in the PM's prompts)" "$dflt_issue")"
+  fi
+  [ -n "$username" ] || username=$dflt_user
+  [ -n "$issue_example" ] || issue_example=$dflt_issue
+  valid_name "$username" || { echo "hq init: invalid --user-name (no quotes, \$, backticks, |, &, ;, brackets or control characters; max 40)" >&2; exit 2; }
+  valid_issue "$issue_example" || { echo "hq init: invalid --issue-example '$issue_example' (letters, digits, . _ - only)" >&2; exit 2; }
   local profdir="$HQ_CONF/profiles"
   if [ -n "$staterepo" ]; then
     mkdir -p "$staterepo"; staterepo="$(cd "$staterepo" && pwd -P)"
@@ -130,10 +153,9 @@ USAGE
   if [ -n "$staterepo" ] && [ -n "$remote" ] && [ "$sync" = on ]; then   # warn early: the first sync would otherwise fail with a bare exit 2
     sync_check "$staterepo" || echo "hq init: continuing, but fix the above before relying on sync (check again with: hq doctor)" >&2
   fi
-  [ -n "$username" ] || username="$(git config user.name 2>/dev/null | awk '{print $1}')"; [ -n "$username" ] || username="${USER:-CHANGEME}"
   mkdir -p "$HQ_CONF" "$profdir"; pdir="$profdir/$name"
   if [ -d "$pdir" ] && [ "$force" = 0 ]; then echo "keeping existing profile $pdir (--force to recreate)"
-  else rm -rf "$pdir"; cp -R "$HQ_DIR/profiles/_template" "$pdir"; sed -e "s|^TEAM=.*|TEAM=$team|" -e "s|^USER_NAME=[^ #]*|USER_NAME=$username|" "$pdir/profile.env" > "$pdir/profile.env.tmp" && mv "$pdir/profile.env.tmp" "$pdir/profile.env"; echo "created profile $pdir"; fi
+  else rm -rf "$pdir"; cp -R "$HQ_DIR/profiles/_template" "$pdir"; sed -e "s|^TEAM=.*|TEAM=$team|" -e "s|^USER_NAME=[^#]*|USER_NAME='$username'      |" -e "s|^ISSUE_EXAMPLE=.*|ISSUE_EXAMPLE=$issue_example|" "$pdir/profile.env" > "$pdir/profile.env.tmp" && mv "$pdir/profile.env.tmp" "$pdir/profile.env"; echo "created profile $pdir"; fi
   if [ -f "$HQ_CONF/env" ] && [ "$force" = 0 ]; then echo "keeping existing $HQ_CONF/env (--force to rewrite)"
   else
     { echo "HQ_PROFILE=$name"

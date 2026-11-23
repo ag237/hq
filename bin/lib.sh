@@ -61,6 +61,8 @@ render() {
 # strings, and they can come from tracker text via the PM, so only a conservative character set is accepted.
 valid_issue() { case "$1" in ""|-*|*[!A-Za-z0-9._-]*|.*) return 1;; esac; [ "${#1}" -le 64 ]; }
 valid_repo() { [ "$1" = "-" ] && return 0; case "$1" in ""|-*|.*|*[!A-Za-z0-9._-]*) return 1;; esac; [ "${#1}" -le 100 ]; }
+# A display name that ends up in profile.env (sourced by bash), sed replacements and prompt text: reject shell/sed metacharacters and control chars.
+valid_name() { case "$1" in ""|*[\'\"\\\$\`\|\&\;\<\>\(\)\{\}\*\?\#\~\!]*|*[[:cntrl:]]*) return 1;; esac; [ "${#1}" -le 40 ]; }
 need_issue() { valid_issue "$1" || { echo "hq: invalid issue id '$1' (letters, digits, . _ - only; max 64)" >&2; exit 2; }; }
 need_repo() { valid_repo "$1" || { echo "hq: invalid repo name '$1' (letters, digits, . _ - only, not starting with . or -)" >&2; exit 2; }; }
 q() { printf '%q' "$1"; }          # shell-quote a value that is embedded in a tmux command string

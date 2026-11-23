@@ -3,6 +3,7 @@
 # git remote; touches nothing outside a temp dir.
 # shellcheck disable=SC2034
 set -uo pipefail
+exec < /dev/null   # never let a command under test (e.g. hq init) wait for a person on the terminal
 HQ_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SB="$(mktemp -d "${TMPDIR:-/tmp}/hq-test.XXXXXX")"; SB="$(cd "$SB" && pwd -P)"
 SOCK="hqtest-$$"
