@@ -41,6 +41,7 @@ need_profile() {
   if [ "$(cd "$HOME_DIR" 2>/dev/null && pwd -P)" = "$(cd "$HOME" && pwd -P)" ]; then
     echo "hq: the working directory is \$HOME, which would overwrite your global ~/.claude. Put hq inside a dedicated directory (e.g. ~/work/hq) or set HQ_WORKDIR." >&2; exit 1
   fi
+  umask "$(printf '%03o' $(( $(umask) | 022 )))"   # never create group/world-writable files, whatever the caller's umask (a CI runner may use 000)
   mkdir -p "$BRIEFS" "$LOGS" "$MODELS"; chmod 700 "$STATE" 2>/dev/null || true   # briefs/logs hold issue text: owner only
   [ -e "$BOARD" ] || : > "$BOARD"
 }
