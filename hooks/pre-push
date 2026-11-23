@@ -2,6 +2,9 @@
 # Blocks a push if lint (secrets, personal data, portability) or the tests fail.
 # Enable once per clone: git config core.hooksPath hooks     Skip in an emergency: git push --no-verify
 set -u
+# git exports GIT_DIR, GIT_INDEX_FILE, etc. to hooks; if they leak into the tests' sandbox repos, the tests
+# commit into (and delete files from) this real checkout. Drop every repo-context variable first.
+for v in $(git rev-parse --local-env-vars); do unset "$v"; done
 cd "$(git rev-parse --show-toplevel)" || exit 1
 tests/lint.sh >/dev/null || { echo "pre-push: lint failed; run tests/lint.sh" >&2; exit 1; }
 tests/run.sh >/dev/null || { echo "pre-push: tests failed; run tests/run.sh" >&2; exit 1; }
