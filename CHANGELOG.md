@@ -11,6 +11,8 @@ All notable changes to this project are documented here. The format follows
 - `hq init --remote` and `hq doctor` (with `HQ_SYNC=on`) check that git can push to origin without a prompt (`ls-remote` plus a
   `push --dry-run`; never pushes). `bin/sync` prints the same diagnosis when it exits 2.
 - `hq adopt` warns when the session later moved to a different directory than the one it started in.
+- `/checkin` overwrites a one-line `heartbeat` in the state dir (kept untracked by `bin/sync`, so no commits) and `hq status` shows it with its age.
+- `/checkin` sends one push when a worker has waited on you for over 60 minutes (plan approval, permission prompt, question), deduplicated via the day's log; none for workers idle after a reported DONE.
 
 ### Changed
 - The macOS launchd agent logs to `~/Library/Logs/hq/autostart.log` and uses a fixed `PATH` (extend it in `~/.config/hq/env`)

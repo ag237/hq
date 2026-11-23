@@ -222,7 +222,17 @@ case "${1:-up}" in
   up) up; if [ -t 1 ] && [ -z "${TMUX:-}" ] && [ -z "${HQ_SOCKET:-}" ]; then exec tmux attach -t "$SESSION"; fi ;;
   status)
     echo "== board =="; [ -s "$BOARD" ] && column -t -s$'\t' "$BOARD" || echo "(empty)"
-    echo; echo "== tmux =="; tm list-windows -t "$SESSION" 2>/dev/null || echo "(no session)" ;;
+    echo; echo "== tmux =="; tm list-windows -t "$SESSION" 2>/dev/null || echo "(no session)"
+    echo; echo "== heartbeat =="
+    if [ -s "$STATE/heartbeat" ]; then
+      python3 -I - "$STATE/heartbeat" <<'PY'
+import sys, time
+l = open(sys.argv[1]).readline().rstrip("\n")
+try: a = int(time.time() - time.mktime(time.strptime(l.split()[0], "%Y-%m-%dT%H:%M")))
+except Exception: a = None
+print(l + (" (age %dm%s)" % (max(a, 0) // 60, "; STALE" if a > 5400 else "") if a is not None else ""))
+PY
+    else echo "(none yet: /checkin writes it)"; fi ;;
   down) tm kill-session -t "$SESSION" 2>/dev/null && echo "hq: down" || echo "hq: not running" ;;
   park)
     [ $# -eq 2 ] || { echo "usage: hq park <ISSUE>" >&2; exit 2; }
