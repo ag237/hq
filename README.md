@@ -42,7 +42,9 @@ hq config && hq
 ```
 Then tell the PM what to work on: "Work on ENG-123".
 
-`hq init` checks requirements, creates a profile from `profiles/_template`, writes `~/.config/hq/env`, links `hq` into
+`hq init` checks requirements, creates a profile from `profiles/_template` (it asks how the PM should address you and for an
+example issue id when run in a terminal and the flags `--user-name` / `--issue-example` are missing; without a terminal it uses
+defaults), writes `~/.config/hq/env`, links `hq` into
 `~/.local/bin`, and renders the config into `<workdir>/.claude/`. It refuses to use `$HOME` itself as the working
 directory, because that would overwrite your global `~/.claude`. No access to the git host (for example a locked-down
 work machine)? Download an archive of the repo (the GitHub "Download ZIP" or a `git archive` tarball), move it over and extract it instead of cloning.
@@ -54,9 +56,9 @@ hq status           board next to live tmux windows
 hq park ISSUE       close the window, keep the session (not resumed on rebuild)
 hq revive ISSUE     reopen by EXACT board id, conversation resumed
 hq find <term>      search board, briefs and old transcripts (any session, even ones from before hq)
-hq adopt <uuid> ISSUE [cwd]   put an existing session on the board as parked
+hq adopt <uuid> ISSUE [cwd]   put an existing session on the board as parked (warns if it later moved to another directory)
 hq config           re-render the PM agent, commands and settings after editing claude/ or a profile
-hq doctor | init | down | autostart on|off|status
+hq doctor | init | down | autostart on|off|status|show
 ```
 PM slash commands: `/dispatch /park /revive /standup /review /checkin /eod`. The PM runs `/checkin` on a loop and
 pushes a phone notification (the `PushNotification` tool) only for blocked, stuck or gone workers and PRs ready to merge.
@@ -93,6 +95,10 @@ unit on Linux/WSL, a launchd agent on macOS. Background processes a worker was r
 `bin/sync` commits and pushes the state repo (never forced; one pull-rebase retry; exit 2 means a human is needed). The PM
 runs it from `/checkin` and `/eod`. It refuses to run if the state lives inside this app repo, refuses to commit anything
 that looks like a credential, and `HQ_SYNC=off` disables it. Authentication is whatever git already uses on that machine.
+`hq init --remote` and `hq doctor` (when `HQ_SYNC=on`) check that git can push to the origin without a prompt, using `git ls-remote`
+and a `git push --dry-run` of a throwaway commit, so nothing is ever pushed to test it. If that fails, fix git's credentials first:
+`gh auth setup-git` for GitHub over HTTPS, a credential helper for other HTTPS hosts, or an ssh key that is usable without a
+passphrase prompt (loaded in `ssh-agent`).
 
 ## macOS (zsh)
 Your login shell doesn't matter: every script starts with `#!/usr/bin/env bash`, so zsh just launches them.
@@ -100,7 +106,12 @@ Your login shell doesn't matter: every script starts with `#!/usr/bin/env bash`,
 - The scripts avoid bash 4 features and GNU-only tools; CI runs the full test suite on macOS with its stock bash 3.2.
 - Add `~/.local/bin` to your PATH for plain `hq`: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && exec zsh`.
 - Clone into a dedicated directory such as `~/work/hq`, not into `~`.
-- `hq autostart on` writes a launchd agent (`~/Library/LaunchAgents/net.hq.up.plist`). Not yet tested on a real Mac.
+- `hq autostart on` writes a launchd agent (`~/Library/LaunchAgents/net.hq.up.plist`). launchd starts agents with a minimal
+  environment, so the agent sets a fixed `PATH` (`~/.local/bin`, `/opt/homebrew/bin`, `/usr/local/bin`, the system dirs) instead
+  of copying yours. If `tmux`, `git`, `python3` or `claude` live elsewhere, `autostart on` says so and prints the line to add to
+  `~/.config/hq/env` (for example `PATH="$PATH:/some/dir"`; hq sources that file on every start). Output of a start at login goes to
+  `~/Library/Logs/hq/autostart.log`. `hq autostart show` prints the agent without installing it. The generated plist is checked
+  with Python's `plistlib` in the tests, but loading it with `launchctl` is not yet tested on a real Mac.
 
 ## Security and development
 hq starts agents that can run commands, so read [SECURITY.md](SECURITY.md) for what it does and does not protect.
