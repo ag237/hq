@@ -5,4 +5,5 @@ set -u
 cd "$(git rev-parse --show-toplevel)" || exit 1
 tests/lint.sh >/dev/null || { echo "pre-push: lint failed; run tests/lint.sh" >&2; exit 1; }
 tests/run.sh >/dev/null || { echo "pre-push: tests failed; run tests/run.sh" >&2; exit 1; }
+tests/policy.sh >/dev/null || { echo "pre-push: policy tests failed; run tests/policy.sh" >&2; exit 1; }
 tests/secrets.sh >/dev/null || { echo "pre-push: secret-disclosure tests failed; run tests/secrets.sh" >&2; exit 1; }

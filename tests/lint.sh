@@ -42,6 +42,10 @@ if git rev-parse --git-dir >/dev/null 2>&1; then
   [ -z "$hits" ] && ok "no credential-shaped strings anywhere in git history" || bad "credential-shaped strings in history" "$hits"
 fi
 
+if command -v gitleaks >/dev/null 2>&1; then
+  gitleaks git --no-banner --redact --exit-code 1 . >/dev/null 2>&1 && ok "gitleaks: no findings in tree or history" || bad "gitleaks found something (run: gitleaks git --redact -v .)"
+elif [ -n "${CI:-}" ]; then echo "  skip  gitleaks runs in the security job"; else echo "  skip  gitleaks not installed (optional locally)"; fi
+
 echo "personal / environment data"
 PERSONAL='/home/[a-z][a-z0-9_-]*/|/Users/[A-Za-z][A-Za-z0-9_-]*/|(^|[^0-9.])(10\.[0-9]+|192\.168|172\.(1[6-9]|2[0-9]|3[01]))\.[0-9]+\.[0-9]+|[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[a-z]{2,}'
 # shellcheck disable=SC2086
