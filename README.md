@@ -1,89 +1,124 @@
-# hq: a PM agent that runs your Claude Code sessions
+# hq
 
-One long-running `pm` Claude agent in a tmux session. You talk to it; it starts worker `claude` sessions
-(one tmux window each), checks on them quietly, and tracks everything in your issue tracker and a small
-board. Workers can be parked and revived, and the whole layout rebuilds from disk after a reboot.
+[![ci](https://github.com/ag237/hq/actions/workflows/ci.yml/badge.svg)](https://github.com/ag237/hq/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+**A project-manager agent for your Claude Code sessions.**
+
+Running several `claude` sessions at once gets hard to track. `hq` puts one long-running `pm` agent in front of them:
+you talk to the PM, it starts worker sessions (one tmux window each), checks on them quietly, keeps your issue tracker
+current, and pings you only when something needs you. Workers can be parked and revived later, and the whole layout
+rebuilds from disk after a reboot.
+
+- **One conversation, many workers.** Ask the PM to work on an issue; it writes the brief and spawns the worker.
+- **Built for long-running work.** Workers are ordinary interactive sessions you can attach to, park and revive, not one-shot jobs.
+- **Rebuildable.** State lives on disk and in your tracker, so `hq` after a reboot resumes the PM and every active worker.
+- **Private by construction.** The app repo holds no personal data; your profile and state live in a separate private repo.
+
+## How it works
+
+```
+ you ──► tmux session "hq"
+          ├─ window pm        claude --agent pm      reads the tracker, dispatches, reviews, briefs you
+          ├─ window ISSUE-1   claude (ops worker)    runs in your working dir, no worktree
+          ├─ window ISSUE-2   claude (worktree)      own git worktree + branch, ends in a PR
+          └─ ...
+ board.tsv   issue  repo  cwd  uuid  status  updated     (what the PM and `hq up` rebuild from)
+ state repo  profiles/<name>/  state/<host>/            (private; pushed by bin/sync)
+```
+
+The PM never edits your repos. It delegates, tracks status in the issue tracker, and never merges: you merge.
+Workers message the PM when done or blocked (`SendMessage`), and the PM answers or escalates to you.
 
 ## Requirements
-Linux, macOS or WSL with `bash git tmux python3` and the `claude` CLI (`hq doctor` checks). Native Windows needs WSL.
+Linux, macOS or WSL with `bash`, `git`, `tmux`, `python3` and the [`claude` CLI](https://docs.claude.com/en/docs/claude-code). `hq doctor` checks. Native Windows needs WSL.
 
-## macOS (zsh)
-Your login shell doesn't matter: every `hq` script starts with `#!/usr/bin/env bash`, so zsh just launches them. Notes:
-- Install the requirements: `brew install tmux git python3` (macOS already has `uuidgen`; the `claude` CLI per its docs). `hq doctor` shows what's missing.
-- macOS's system bash is 3.2. The scripts avoid bash 4 features, so it should work as is (or `brew install bash`).
-- `hq init` links `hq` into `~/.local/bin`; for plain `hq` in zsh add it to your PATH: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && exec zsh`.
-- Clone into a dedicated directory such as `~/work/hq`, not directly in `~`.
-- `hq autostart on` writes a launchd agent (`~/Library/LaunchAgents/net.hq.up.plist`).
-- macOS has never been run by the author (only Linux/WSL), so expect to report small issues.
-
-## Quick start (any machine)
+## Quick start
 ```
-git clone <this repo> ~/work/hq        # any dedicated directory; its PARENT is the working dir (or pass --workdir)
+git clone https://github.com/ag237/hq ~/work/hq     # any dedicated directory; its PARENT is the working dir (or pass --workdir)
 ~/work/hq/bin/hq init --name work --team ENG --state-repo ~/work/hq-state --remote <private repo URL>
-$EDITOR ~/work/hq-state/profiles/work/pm-profile.md   # fill every CHANGEME (tracker, risky systems, PR flow, repo map)
+$EDITOR ~/work/hq-state/profiles/work/pm-profile.md  # fill every CHANGEME: tracker, risky systems, PR flow, repo map
 hq config && hq
 ```
-No access to the git host (e.g. a work machine)? Download an archive of the repo instead, move it over, and `tar xzf hq.tar.gz -C ~/work`.
+Then tell the PM what to work on: "Work on ENG-123".
+
 `hq init` checks requirements, creates a profile from `profiles/_template`, writes `~/.config/hq/env`, links `hq` into
-`~/.local/bin`, and renders the config. It refuses to use `$HOME` itself as the working dir (that would overwrite your global `~/.claude`).
+`~/.local/bin`, and renders the config into `<workdir>/.claude/`. It refuses to use `$HOME` itself as the working
+directory, because that would overwrite your global `~/.claude`. No access to the git host (for example a locked-down
+work machine)? Download an archive of the repo (the GitHub "Download ZIP" or a `git archive` tarball), move it over and extract it instead of cloning.
 
-### Two repos: the app (public) and your state (private)
-- **This repo is the app**: scripts, generic agent/command templates, `profiles/_template`. It contains nothing about you, your employer or your tracker, so it can be public.
-- **Your state repo is private and separate** (`--state-repo DIR`, a sibling directory, not a submodule): `profiles/<name>/` (your tracker, repo map, rules) and `state/<hostname>/` (board, briefs, logs). `bin/sync` commits and pushes only that repo, to the origin you gave with `--remote`.
-- No `--state-repo`? Profile goes to `~/.config/hq/profiles/` and state to `~/.local/state/hq`, with sync off: nothing is backed up, nothing leaks.
-- Use one state repo per environment (for example personal and work), each with its own private origin.
-
-## Use
+## Daily use
 ```
-hq                  # build/resume everything, then attach to tmux session `hq`
-hq status           # board vs live windows
-hq park ISSUE       # close window, keep session (not resumed on rebuild)
-hq revive ISSUE     # reopen by EXACT board id, conversation resumed
-hq find <term>      # search board, briefs, old transcripts (any session, even pre-hq)
-hq adopt <uuid> ISSUE [cwd]   # put an old session on the board as parked
-hq config           # re-render the PM agent, commands, settings after editing claude/ or a profile
+hq                  build or resume everything, then attach to tmux session `hq`
+hq status           board next to live tmux windows
+hq park ISSUE       close the window, keep the session (not resumed on rebuild)
+hq revive ISSUE     reopen by EXACT board id, conversation resumed
+hq find <term>      search board, briefs and old transcripts (any session, even ones from before hq)
+hq adopt <uuid> ISSUE [cwd]   put an existing session on the board as parked
+hq config           re-render the PM agent, commands and settings after editing claude/ or a profile
 hq doctor | init | down | autostart on|off|status
 ```
-PM slash commands: `/dispatch /park /revive /standup /review /checkin /eod`.
+PM slash commands: `/dispatch /park /revive /standup /review /checkin /eod`. The PM runs `/checkin` on a loop and
+pushes a phone notification (the `PushNotification` tool) only for blocked, stuck or gone workers and PRs ready to merge.
 
-## Worker kinds
-- `spawn-worker --ops ISSUE "<brief>"`: runs in the working dir, no worktree. Sysadmin/IaC/diagnosis.
-- Models: `HQ_PM_MODEL` / `HQ_WORKER_MODEL` in `profile.env` (aliases like `opus`/`sonnet` or full IDs; empty = Claude Code default). `spawn-worker --model <m>` overrides one worker and is remembered. Applied on every start/resume; restart the PM (`hq down && hq`) to pick up a change.
-- `spawn-worker --plan ...`: plan mode on the `opusplan` model (opus plans, sonnet executes). First start only; later resumes don't re-enter plan mode.
-- `spawn-worker <repo> ISSUE "<brief>"`: own worktree at `hq/worktrees/<repo>/<ISSUE>` + branch, ends in a PR.
-- `--read-only` on either. Background subagents only for quick read-only lookups.
+To restart the PM after changing its instructions: detach (`ctrl+b d`, or your tmux prefix), `hq down`, then `hq`.
+
+## Workers
+- `spawn-worker --ops ISSUE "<brief>"`: runs in the working dir, no worktree. For sysadmin, IaC and diagnosis.
+- `spawn-worker <repo> ISSUE "<brief>"`: own worktree at `hq/worktrees/<repo>/<ISSUE>` on a branch named after the issue, ends in a PR.
+- `--read-only` on either: investigation only. `--plan`: start in plan mode on the `opusplan` model (opus plans, sonnet executes); first start only, so a resumed worker doesn't re-enter plan mode.
+- **Models:** `HQ_PM_MODEL` / `HQ_WORKER_MODEL` in `profile.env` (aliases like `opus`/`sonnet` or full IDs; empty = Claude Code's default). `spawn-worker --model <m>` pins one worker and is remembered across restarts. Restart the PM to pick up a change.
+- **Board states:** `active` (resumed on rebuild), `parked` (window closed, session kept), `done` (worktree removed, session kept, still revivable).
+- Background subagents are used only for quick read-only lookups; they die with the PM.
+
+## Profiles, and the two repos
+A **profile** is what differs between environments: the tracker and team key, your repo map, which systems are risky,
+the PR flow, extra worker rules, and the extra permissions the PM gets (such as tracker MCP tools). It lives in
+`profiles/<name>/` (`profile.env`, `pm-profile.md`, `worker-extra.md`, `settings.json`); start from `profiles/_template`.
+
+- **This repo is the app**: scripts, generic agent and command templates, and the profile template. It contains nothing about you, your employer or your tracker.
+- **Your state repo is private and separate** (`--state-repo DIR`, a sibling directory, not a submodule): `profiles/<name>/` and `state/<hostname>/` (board, briefs, logs, session ids, per-worker model pins). `bin/sync` commits and pushes only that repo, to the origin you gave with `--remote`.
+- Without `--state-repo`, the profile goes to `~/.config/hq/profiles/` and state to `~/.local/state/hq`, with sync off: nothing is backed up and nothing leaves the machine.
+- Use one state repo per environment (for example personal and work), each with its own private origin. Only put work data in a repo your employer allows.
+
+Local config is `~/.config/hq/env`: `HQ_PROFILE`, `HQ_WORKDIR`, `HQ_PROFILES_DIR`, `HQ_STATE_DIR`, `HQ_SYNC=on|off`. Profiles are looked up in
+`HQ_PROFILES_DIR`, then `~/.config/hq/profiles/`, then this repo's `profiles/`.
+
+## After a reboot
+Run `hq`. It resumes the PM by its pinned session id, resumes every `active` worker (a fresh, re-briefed session if the
+transcript is gone), and re-arms `/standup` and `/loop /checkin`. `hq autostart on` does this at login: a systemd user
+unit on Linux/WSL, a launchd agent on macOS. Background processes a worker was running do not survive a reboot; its conversation does.
+
+## Backup and sync
+`bin/sync` commits and pushes the state repo (never forced; one pull-rebase retry; exit 2 means a human is needed). The PM
+runs it from `/checkin` and `/eod`. It refuses to run if the state lives inside this app repo, refuses to commit anything
+that looks like a credential, and `HQ_SYNC=off` disables it. Authentication is whatever git already uses on that machine.
+
+## macOS (zsh)
+Your login shell doesn't matter: every script starts with `#!/usr/bin/env bash`, so zsh just launches them.
+- `brew install tmux git python3` (macOS already has `uuidgen`). `hq doctor` shows what's missing.
+- The scripts avoid bash 4 features and GNU-only tools; CI runs the full test suite on macOS with its stock bash 3.2.
+- Add `~/.local/bin` to your PATH for plain `hq`: `echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc && exec zsh`.
+- Clone into a dedicated directory such as `~/work/hq`, not into `~`.
+- `hq autostart on` writes a launchd agent (`~/Library/LaunchAgents/net.hq.up.plist`). Not yet tested on a real Mac.
+
+## Security and development
+hq starts agents that can run commands, so read [SECURITY.md](SECURITY.md) for what it does and does not protect.
+- `tests/lint.sh`: shellcheck (and gitleaks if installed), bash 3.2/macOS portability, credential and personal-data scan of the tree and history, workflow pinning. An optional machine-local `~/.config/hq/denylist` (one regex per line: your names, hosts, internal domains) is checked too and never committed.
+- `tests/run.sh`: end-to-end tests in a sandbox (fake HOME, private tmux server, stub `claude`, local bare remote). Safe to run anywhere.
+- `tests/secrets.sh`: secret-disclosure tests: the credential patterns, proof that environment secrets never reach files, process args, tmux, output or the synced remote, and that sync and lint never print a secret they find.
+- `tests/policy.sh`: the permission allowlist stays small and read-only, input validators reject hostile input (fuzzed, per locale), LF line endings.
+- `git config core.hooksPath hooks` runs all four before every push. CI runs them on Linux and macOS, plus gitleaks, actionlint and zizmor.
+- Contributing: [CONTRIBUTING.md](CONTRIBUTING.md). History: [CHANGELOG.md](CHANGELOG.md). Design notes and lessons learned: [PORTING.md](PORTING.md).
 
 ## Layout
-`bin/` scripts · `claude/` generic PM agent, commands, settings (templates with `{{placeholders}}`) ·
-`profiles/_template/` start of a profile · `worktrees/` per machine, gitignored.
-In your state repo: `profiles/<name>/` and `state/<hostname>/` (board, briefs, logs, `pm.session`, per-worker model pins).
+`bin/` scripts · `claude/` generic PM agent, commands and settings (templates with `{{placeholders}}`) ·
+`profiles/_template/` start of a profile · `systemd/` autostart unit · `tests/` · `worktrees/` per machine, gitignored.
 
-Board (`board.tsv`): `issue repo cwd uuid status updated`; `active` (resumed on rebuild) / `parked` / `done`
-(worktree gone, session kept, still revivable); `repo` is `-` for ops workers.
+`<workdir>/.claude/{agents,commands,settings.json}` are generated: edit `claude/` or your profile, then `hq config`. The PM re-reads its instructions only when restarted.
 
-## Local config (`~/.config/hq/env`)
-Sets `HQ_PROFILE`, `HQ_WORKDIR`, `HQ_PROFILES_DIR` (where profiles live), `HQ_STATE_DIR`, `HQ_SYNC=on|off`. Profiles are looked up in
-`HQ_PROFILES_DIR`, then `~/.config/hq/profiles/`, then this repo's `profiles/`. Employer or personal details stay in your private state repo or on that machine.
+## Testing tmux code
+Use a private server and clean up by socket: `env -u TMUX HQ_SOCKET=hqtest ...`, then `tmux -L hqtest kill-server`. Never `kill-server` on the default socket.
 
-## Rebuild after a reboot
-Run `hq`. It resumes the PM by `pm.session`, resumes every `active` worker by pinned session id (a fresh re-briefed
-session if the transcript is gone), and re-arms `/standup` + `/loop /checkin`. `hq autostart on` does this at login
-(systemd user unit on Linux/WSL; launchd on macOS, untested).
-
-## Backup / sync
-`bin/sync` commits and pushes the private state repo (the git repo that contains `$HQ_STATE_DIR`) to its origin: never forced,
-one pull-rebase retry, exit 2 = needs a human. The PM runs it from `/checkin` and `/eod`. It refuses to run if the state lives
-inside this app repo, so personal data can't be committed here by accident. `HQ_SYNC=off` disables it. Authentication is whatever git already uses on that machine.
-
-## Development and security checks
-- `tests/lint.sh`: shellcheck (and gitleaks if installed), bash 3.2/macOS portability, credential and personal-data scan (tree and history), workflow pinning. Optional machine-local `~/.config/hq/denylist` (one regex per line: your names, hosts, internal domains) is checked too and never committed.
-- `tests/run.sh`: end-to-end tests in a sandbox (fake HOME, private tmux server, stub `claude`, local bare remote). Safe to run anywhere.
-- `tests/secrets.sh`: secret-disclosure tests: the credential patterns (must-match and must-not-match corpus), proof that secrets in the environment never reach files, process args, tmux, command output or the synced remote, that sync and lint never print a secret they find, and that state and `~/.claude.json` keep owner-only permissions.
-- `tests/policy.sh`: the permission allowlist stays small and read-only, input validators reject hostile input (fuzzed, per locale), LF line endings.
-- `git config core.hooksPath hooks` enables a pre-push hook that runs all four. CI runs them on Linux and macOS. See `SECURITY.md`.
-
-## Notes
-- `<workdir>/.claude/{agents,commands,settings.json}` are generated; edit `claude/` or the profile, then `hq config`. The PM re-reads its own instructions only when restarted.
-- Notifications use the `PushNotification` tool (Remote Control); no extra service.
-- Testing tmux code: use a private server and clean up by socket: `env -u TMUX HQ_SOCKET=hqtest ...`, `tmux -L hqtest kill-server`. Never `kill-server` on the default socket.
-- Details, history and lessons: `PORTING.md`.
+## License
+[MIT](LICENSE)
