@@ -76,8 +76,8 @@ case "$out" in *NOTES.md*) ok "lint still says which file";; *) bad "lint did no
 
 PW="$(rep p 12)"
 # a stub ssh that fails at once and echoes a credentialed URL, as some git/transport errors do (a real network is slow and flaky in CI)
-printf '#!/bin/sh\necho "fatal: unable to access ssh://bot:%s@example.invalid/x.git" >&2\nexit 255\n' "$PW" > "$SB/stubs/failssh"; chmod +x "$SB/stubs/failssh"
-git -C "$STATE_REPO" remote set-url origin "ssh://bot@example.invalid/x.git"
+printf '#!/bin/sh\necho "fatal: unable to access ssh://bot:%s@example.org/x.git" >&2\nexit 255\n' "$PW" > "$SB/stubs/failssh"; chmod +x "$SB/stubs/failssh"
+git -C "$STATE_REPO" remote set-url origin "ssh://bot@example.org/x.git"
 out="$(GIT_SSH_COMMAND="$SB/stubs/failssh" "$HQ" doctor 2>&1)"; rc=$?
 git -C "$STATE_REPO" remote set-url origin "$SB/remote.git"
 [ "$rc" != 0 ] && ok "doctor's push check fails when origin cannot be reached" || bad "doctor passed an unreachable remote"
