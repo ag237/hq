@@ -61,6 +61,8 @@ render() {
 # strings, and they can come from tracker text via the PM, so only a conservative character set is accepted.
 valid_issue() { case "$1" in ""|-*|*[!A-Za-z0-9._-]*|.*) return 1;; esac; [ "${#1}" -le 64 ]; }
 valid_repo() { [ "$1" = "-" ] && return 0; case "$1" in ""|-*|.*|*[!A-Za-z0-9._-]*) return 1;; esac; [ "${#1}" -le 100 ]; }
+# A display name that ends up in profile.env (sourced by bash), sed replacements and prompt text: reject shell/sed metacharacters and control chars.
+valid_name() { case "$1" in ""|*[\'\"\\\$\`\|\&\;\<\>\(\)\{\}\*\?\#\~\!]*|*[[:cntrl:]]*) return 1;; esac; [ "${#1}" -le 40 ]; }
 need_issue() { valid_issue "$1" || { echo "hq: invalid issue id '$1' (letters, digits, . _ - only; max 64)" >&2; exit 2; }; }
 need_repo() { valid_repo "$1" || { echo "hq: invalid repo name '$1' (letters, digits, . _ - only, not starting with . or -)" >&2; exit 2; }; }
 q() { printf '%q' "$1"; }          # shell-quote a value that is embedded in a tmux command string
@@ -73,6 +75,29 @@ tmo() { # tmo <seconds> cmd...   (GNU timeout, Homebrew gtimeout, or no timeout)
   if command -v timeout >/dev/null 2>&1; then timeout "$s" "$@"
   elif command -v gtimeout >/dev/null 2>&1; then gtimeout "$s" "$@"
   else "$@"; fi
+}
+
+# Can git reach and authenticate to the state repo's origin with nobody at the keyboard (no password, no ssh passphrase)?
+# bin/sync runs unattended, so a prompt means it fails. READ-ONLY: ls-remote, then a --dry-run push of a throwaway empty commit
+# (a dry run only talks to the remote; nothing is ever created there). Prints a diagnosis to stderr on failure, nothing on success.
+sync_check() { # <repo>
+  local repo=$1 out rc=0
+  git -C "$repo" remote get-url origin >/dev/null 2>&1 || { echo "sync check: $repo has no origin remote" >&2; return 1; }
+  out="$( ( export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes"
+            export GIT_AUTHOR_NAME=hq GIT_AUTHOR_EMAIL=hq@localhost GIT_COMMITTER_NAME=hq GIT_COMMITTER_EMAIL=hq@localhost
+            cd "$repo" || exit 1
+            tmo 30 git ls-remote --heads origin >/dev/null || exit 1
+            obj="$(git commit-tree "$(git hash-object -t tree -w /dev/null)" -m "hq push check")" || exit 1
+            tmo 30 git push --dry-run -q origin "$obj:refs/heads/hq-push-check" >/dev/null ) 2>&1 )" || rc=$?
+  [ "$rc" != 0 ] || return 0
+  {
+    echo "sync check: git cannot talk to origin without a prompt, so bin/sync would fail (exit 2). git said:"
+    # first lines only, with any user:password@ in a URL masked
+    printf '%s\n' "$out" | grep -v '^$' | head -3 | sed -E -e 's#(://)[^/@[:space:]]*@#\1***@#g' -e 's/^/    /'
+    echo "  Fix the credentials, then re-run 'hq doctor'. GitHub over HTTPS: 'gh auth setup-git'. Other HTTPS hosts: configure a git"
+    echo "  credential helper. SSH: the key must be usable without a passphrase prompt (ssh-add it to a running ssh-agent)."
+  } >&2
+  return 1
 }
 
 # tmux wrapper. HQ_SOCKET selects a private tmux server (tests); unset = the normal one.

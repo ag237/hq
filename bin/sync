@@ -43,5 +43,6 @@ if tmo 60 git pull --rebase --autostash -q origin "$branch" 2>/dev/null && tmo 6
   echo "sync: rebased and pushed"; exit 0
 fi
 git rebase --abort 2>/dev/null
-echo "sync: push failed (diverged history or no network); local commits are kept, nothing was forced" >&2
+echo "sync: push failed (diverged history, no network or no credentials); local commits are kept, nothing was forced" >&2
+sync_check "$SYNC_REPO" || true     # says so when the cause is authentication (it never pushes)
 exit 2

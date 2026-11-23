@@ -10,11 +10,21 @@ python3 -I - "$HQ_SRC/claude/settings.json" "$HQ_SRC/profiles/_template/settings
 import json, re, sys
 ALLOWED_BASH = [
     r"tmux list-windows(:\*)?", r"tmux list-sessions(:\*)?", r"tmux capture-pane(:\*)?",
-    r"git -C \* (status|log|diff|worktree list)(:\*)?", r"git -C \* branch --list(:\*)?", r"git -C \* branch --show-current",
     r"\{\{HQ_BIN\}\}/(hq (status|find:\*|park:\*|revive:\*|adopt:\*)|spawn-worker:\*|sync)",
 ]
 FORBIDDEN = ["curl", "wget", "ssh", "scp", "sudo", "rm ", "chmod", "chown", "bash", "sh ", "python", "eval", "kubectl", "talosctl",
              "docker", "git push", "send-keys", "kill", "Write", "Edit", "--force", "delete", "destroy", "remove", "merge"]
+def wildcard_problem(body):
+    # Claude Code warns about (and mis-matches) these: a * ahead of the last word approves options inserted there, and a * mixed
+    # with the trailing :* is matched as a literal prefix, so the rule never fires. Only a trailing :* may contain a *.
+    core = body[:-2] if body.endswith(":*") else body
+    if "*" in core: return "wildcard before the end of the rule (use an exact value; only a trailing :* is allowed)"
+    return None
+# self-test: the checker must flag the shapes that caused the startup warning
+for r in ("git -C * branch --show-current", "git -C * status:*", "git status * --short"):
+    assert wildcard_problem(r), "wildcard check missed: " + r
+for r in ("git status:*", "tmux list-windows:*", "x/hq status"):
+    assert not wildcard_problem(r), "wildcard check flagged: " + r
 bad = 0
 for path in sys.argv[1:]:
     for rule in json.load(open(path)).get("permissions", {}).get("allow", []):
@@ -31,6 +41,8 @@ for path in sys.argv[1:]:
             print(f"  {path}: forbidden word in rule: {rule}"); bad = 1
         if rule in ("Bash", "Bash(*)", "Bash(:*)", "*") or "(*)" in rule:
             print(f"  {path}: blanket rule: {rule}"); bad = 1
+        if m and wildcard_problem(m.group(1)):
+            print(f"  {path}: {wildcard_problem(m.group(1))}: {rule}"); bad = 1
 sys.exit(bad)
 PY
 "$SB/work/hq/bin/hq" init --name t --team TST --state-repo "$SB/work/hq-state" >/dev/null 2>&1

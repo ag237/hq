@@ -9,7 +9,7 @@
 # hq revive <ISSUE>      reopen a parked/done worker by EXACT board issue id (resumes its conversation)
 # hq find <term>         search board, briefs and old transcripts for a keyword (case-insensitive)
 # hq adopt <uuid> <ISSUE> [cwd]   put a pre-existing session on the board as `parked`
-# hq autostart on|off|status      run `hq up` at WSL boot via a systemd user unit
+# hq autostart on|off|status|show  run `hq up` at login: systemd user unit (Linux/WSL) or launchd agent (macOS); show prints it
 set -euo pipefail
 _s="${BASH_SOURCE[0]}"; while [ -L "$_s" ]; do _d="$(cd "$(dirname "$_s")" && pwd)"; _s="$(readlink "$_s")"; case "$_s" in /*) ;; *) _s="$_d/$_s";; esac; done
 HQ_DIR="$(cd "$(dirname "$_s")/.." && pwd)"; . "$HQ_DIR/bin/lib.sh"
@@ -84,18 +84,34 @@ doctor_cmd() { # returns 1 if a REQUIRED tool is missing
   return "$missing"
 }
 
+doctor_sync() { # when sync is on, check that git can push to origin unattended (returns 1 if not)
+  [ "${HQ_SYNC:-off}" = on ] || return 0
+  local repo
+  repo="$(git -C "$STATE" rev-parse --show-toplevel 2>/dev/null)" || { echo "  MISSING  state repo ($STATE is not inside a git repo; HQ_SYNC=on needs one: hq init --state-repo DIR)"; return 1; }
+  if sync_check "$repo"; then echo "  ok       sync: git can reach and push to origin without a prompt"; else echo "  FAILED   sync: see above"; return 1; fi
+}
+
+ask_default() { # <question> <default>: read a line from the terminal (stderr carries the prompt so stdout is just the answer)
+  local reply=""
+  printf '%s [%s]: ' "$1" "$2" >&2; IFS= read -r reply || true
+  printf '%s' "${reply:-$2}"
+}
+
 init_cmd() {
-  local name=work team=CHANGEME workdir="" statedir="" staterepo="" remote="" username="" sync="" force=0 pdir workd
+  local name=work team=CHANGEME workdir="" statedir="" staterepo="" remote="" username="" issue_example="" sync="" force=0 prompt=0 pdir workd
   while [ $# -gt 0 ]; do case "$1" in
     --name) name=$2; shift 2;; --team) team=$2; shift 2;; --workdir) workdir=$2; shift 2;;
-    --state-dir) statedir=$2; shift 2;; --state-repo) staterepo=$2; shift 2;; --remote) remote=$2; shift 2;; --user-name) username=$2; shift 2;; --sync) sync=$2; shift 2;; --force) force=1; shift;;
+    --state-dir) statedir=$2; shift 2;; --state-repo) staterepo=$2; shift 2;; --remote) remote=$2; shift 2;; --user-name) username=$2; shift 2;; --issue-example) issue_example=$2; shift 2;; --prompt) prompt=1; shift;; --sync) sync=$2; shift 2;; --force) force=1; shift;;
     -h|--help) cat <<'USAGE'
-hq init [--name NAME] [--team KEY] [--user-name N] [--workdir DIR] [--state-repo DIR [--remote URL] | --state-dir DIR] [--sync on|off] [--force]
+hq init [--name NAME] [--team KEY] [--user-name N] [--issue-example ID] [--prompt] [--workdir DIR] [--state-repo DIR [--remote URL] | --state-dir DIR] [--sync on|off] [--force]
   --name       profile name (default: work). Created locally at ~/.config/hq/profiles/NAME from profiles/_template
   --team       issue-tracker team key used in prompts (default: CHANGEME)
   --workdir    directory that holds your project repos and where the PM runs (default: the parent of this hq dir)
   --state-dir  where board/briefs/logs live (default: ~/.local/state/hq, outside the repo)
-  --user-name  how the PM addresses you (default: git user.name, else $USER)
+  --user-name  how the PM addresses you (default: first word of git user.name, else $USER)
+  --issue-example  an issue id used as the example in prompts (default: <TEAM>-123)
+  --prompt     ask for the user name and example issue id (default: asks when stdin is a terminal and a flag is missing,
+               and only when a new profile is being created); without a terminal the defaults are used
   --state-repo DIR  keep profiles + state in a separate PRIVATE git repo at DIR (created if needed; profiles in DIR/profiles,
                state in DIR/state/<hostname>); sync is on once it has an origin. Add the origin with --remote URL.
   --sync       on|off: whether bin/sync pushes the state repo to its origin (default: on if --state-repo has an origin, else off)
@@ -109,6 +125,20 @@ USAGE
     echo "hq init: workdir would be \$HOME (it would overwrite your global ~/.claude). Clone hq into a dedicated directory, e.g. ~/work/hq, or pass --workdir DIR." >&2; exit 1
   fi
   [ -d "$workd" ] || { echo "hq init: workdir '$workd' does not exist" >&2; exit 1; }
+  # Values that end up in profile.env (sourced by bash): validate before anything is created, then ask for what the flags left out.
+  valid_issue "$team" || { echo "hq init: invalid --team '$team' (letters, digits, . _ - only)" >&2; exit 2; }
+  local dflt_user dflt_issue probe="$HQ_CONF/profiles/$name"
+  [ -z "$staterepo" ] || probe="$staterepo/profiles/$name"
+  dflt_user="$(git config user.name 2>/dev/null | awk '{print $1}')"; [ -n "$dflt_user" ] || dflt_user="${USER:-CHANGEME}"
+  dflt_issue="$team-123"
+  if { [ "$prompt" = 1 ] || [ -t 0 ]; } && { [ "$force" = 1 ] || [ ! -d "$probe" ]; }; then
+    [ -n "$username" ] || username="$(ask_default "What should the PM call you?" "$dflt_user")"
+    [ -n "$issue_example" ] || issue_example="$(ask_default "An example issue id (used in the PM's prompts)" "$dflt_issue")"
+  fi
+  [ -n "$username" ] || username=$dflt_user
+  [ -n "$issue_example" ] || issue_example=$dflt_issue
+  valid_name "$username" || { echo "hq init: invalid --user-name (no quotes, \$, backticks, |, &, ;, brackets or control characters; max 40)" >&2; exit 2; }
+  valid_issue "$issue_example" || { echo "hq init: invalid --issue-example '$issue_example' (letters, digits, . _ - only)" >&2; exit 2; }
   local profdir="$HQ_CONF/profiles"
   if [ -n "$staterepo" ]; then
     mkdir -p "$staterepo"; staterepo="$(cd "$staterepo" && pwd -P)"
@@ -120,10 +150,12 @@ USAGE
     [ -n "$sync" ] || { git -C "$staterepo" remote get-url origin >/dev/null 2>&1 && sync=on || sync=off; }
   fi
   [ -n "$sync" ] || sync=off
-  [ -n "$username" ] || username="$(git config user.name 2>/dev/null | awk '{print $1}')"; [ -n "$username" ] || username="${USER:-CHANGEME}"
+  if [ -n "$staterepo" ] && [ -n "$remote" ] && [ "$sync" = on ]; then   # warn early: the first sync would otherwise fail with a bare exit 2
+    sync_check "$staterepo" || echo "hq init: continuing, but fix the above before relying on sync (check again with: hq doctor)" >&2
+  fi
   mkdir -p "$HQ_CONF" "$profdir"; pdir="$profdir/$name"
   if [ -d "$pdir" ] && [ "$force" = 0 ]; then echo "keeping existing profile $pdir (--force to recreate)"
-  else rm -rf "$pdir"; cp -R "$HQ_DIR/profiles/_template" "$pdir"; sed -e "s|^TEAM=.*|TEAM=$team|" -e "s|^USER_NAME=[^ #]*|USER_NAME=$username|" "$pdir/profile.env" > "$pdir/profile.env.tmp" && mv "$pdir/profile.env.tmp" "$pdir/profile.env"; echo "created profile $pdir"; fi
+  else rm -rf "$pdir"; cp -R "$HQ_DIR/profiles/_template" "$pdir"; sed -e "s|^TEAM=.*|TEAM=$team|" -e "s|^USER_NAME=[^#]*|USER_NAME='$username'      |" -e "s|^ISSUE_EXAMPLE=.*|ISSUE_EXAMPLE=$issue_example|" "$pdir/profile.env" > "$pdir/profile.env.tmp" && mv "$pdir/profile.env.tmp" "$pdir/profile.env"; echo "created profile $pdir"; fi
   if [ -f "$HQ_CONF/env" ] && [ "$force" = 0 ]; then echo "keeping existing $HQ_CONF/env (--force to rewrite)"
   else
     { echo "HQ_PROFILE=$name"
@@ -145,6 +177,37 @@ NEXT
 }
 
 xmlq() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
+# launchd starts agents with a minimal environment, so the plist carries a fixed PATH instead of whatever PATH `hq autostart on`
+# happened to run under. Extra directories go in ~/.config/hq/env (PATH="$PATH:/some/dir"), which every hq command sources.
+LAUNCHD_PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+LAUNCHD_LOG="$HOME/Library/Logs/hq/autostart.log"   # outside the state repo, which sync would commit
+launchd_plist() {
+  cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>net.hq.up</string>
+<key>ProgramArguments</key><array><string>$(xmlq "$HQ_DIR")/bin/hq</string><string>up</string></array>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>$(xmlq "$LAUNCHD_PATH")</string></dict>
+<key>RunAtLoad</key><true/>
+<key>StandardOutPath</key><string>$(xmlq "$LAUNCHD_LOG")</string>
+<key>StandardErrorPath</key><string>$(xmlq "$LAUNCHD_LOG")</string>
+</dict></plist>
+PLIST
+}
+# Warn (stderr) about required tools that the launchd PATH plus ~/.config/hq/env would not find at login.
+autostart_path_check() {
+  local t missing=0 where
+  for t in tmux git python3 claude; do
+    if ! ( PATH="$LAUNCHD_PATH"; [ ! -f "$HQ_CONF/env" ] || . "$HQ_CONF/env"; command -v "$t" >/dev/null 2>&1 ); then
+      missing=1; where="$(command -v "$t" 2>/dev/null || true)"
+      echo "autostart: '$t' is not on the PATH launchd will use at login${where:+ (it is at $where)}" >&2
+      [ -z "$where" ] || echo "           add it: echo 'PATH=\"\$PATH:$(dirname "$where")\"' >> $HQ_CONF/env" >&2
+    fi
+  done
+  return "$missing"
+}
 require_row() { # <issue> -> sets repo cwd uuid status
   need_issue "$1"; local row; row="$(board_row "$1")"
   [ -n "$row" ] || { echo "hq: no board row with exact id '$1'. Try: hq find <term>" >&2; exit 3; }
@@ -154,7 +217,7 @@ require_row() { # <issue> -> sets repo cwd uuid status
 case "${1:-up}" in init|doctor) ;; *) need_profile ;; esac
 case "${1:-up}" in
   init) shift; init_cmd "$@" ;;
-  doctor) echo "hq requirements:"; doctor_cmd ;;
+  doctor) echo "hq requirements:"; rc=0; doctor_cmd || rc=1; doctor_sync || rc=1; exit "$rc" ;;
   config) gen_config; echo "generated $HOME_DIR/.claude (profile: $PROFILE from $PROFILE_DIR, state: $STATE)" ;;
   up) up; if [ -t 1 ] && [ -z "${TMUX:-}" ] && [ -z "${HQ_SOCKET:-}" ]; then exec tmux attach -t "$SESSION"; fi ;;
   status)
@@ -223,17 +286,35 @@ PY
     case "$uuid" in *[!0-9a-fA-F-]*|"") echo "hq: invalid session id" >&2; exit 2;; esac
     [ -z "$(board_row "$issue")" ] || { echo "$issue already on board" >&2; exit 1; }
     f="$(ls "$PROJ_DIR"/*/"$uuid".jsonl 2>/dev/null | head -1)"; [ -n "$f" ] || { echo "no transcript for $uuid" >&2; exit 1; }
-    [ -n "$cwd" ] || cwd="$(python3 -I -c "
+    # first and last cwd in the transcript: it is stored under the FIRST (where the session started), so that is what the board keeps
+    IFS=$'\t' read -r first_cwd last_cwd <<< "$(python3 -I -c "
 import json,sys
+first = last = ''
 for l in open(sys.argv[1]):
-    try: c=json.loads(l).get('cwd')
+    try: c = json.loads(l).get('cwd')
     except ValueError: continue
-    if c: print(c); break" "$f")"
+    if c:
+        first = first or c; last = c
+print(first + '\t' + last)" "$f")"
+    [ -n "$cwd" ] || cwd="$first_cwd"
     [ -d "$cwd" ] || { echo "cwd '$cwd' does not exist; pass one explicitly" >&2; exit 1; }
     printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$issue" - "$cwd" "$uuid" parked "$(now)" >> "$BOARD"
-    echo "adopted $uuid as $issue (parked, cwd $cwd). Next: hq revive $issue" ;;
+    echo "adopted $uuid as $issue (parked, cwd $cwd). Next: hq revive $issue"
+    if [ -n "$last_cwd" ] && [ "$last_cwd" != "$first_cwd" ]; then
+      echo "hq: warning: this session started in $first_cwd but later moved to $last_cwd (a worktree?)." >&2
+      echo "    It will resume in $cwd, because its transcript is found by that directory. After 'hq revive $issue', tell the worker to cd to $last_cwd." >&2
+    fi ;;
   autostart)
     act="${2:-status}"
+    if [ "$act" = show ]; then   # print what `on` would install (no side effects); target defaults to this OS
+      tgt="${3:-}"; [ -n "$tgt" ] || case "$(uname)" in Darwin) tgt=launchd;; *) tgt=systemd;; esac
+      case "$tgt" in
+        launchd) launchd_plist; autostart_path_check || true ;;
+        systemd) sed -e "s|@HQ_DIR@|$HQ_DIR|g" -e "s|@PATH@|$PATH|g" "$HQ_DIR/systemd/hq.service" ;;
+        *) echo "usage: hq autostart show [launchd|systemd]" >&2; exit 2 ;;
+      esac
+      exit 0
+    fi
     case "$(uname)" in
       Linux)
         unit="$HOME/.config/systemd/user/hq.service"
@@ -245,26 +326,18 @@ for l in open(sys.argv[1]):
                echo "autostart on: 'hq up' runs whenever this user's systemd starts (WSL: when the distro starts)" ;;
           off) systemctl --user disable hq.service 2>/dev/null || true; rm -f "$unit"; systemctl --user daemon-reload 2>/dev/null || true; echo "autostart off" ;;
           status) systemctl --user is-enabled hq.service 2>&1 | head -1 || true ;;
-          *) echo "usage: hq autostart on|off|status" >&2; exit 2 ;;
+          *) echo "usage: hq autostart on|off|status|show" >&2; exit 2 ;;
         esac ;;
-      Darwin)   # launchd; written but not tested by the author
+      Darwin)   # launchd; not yet tested on a real Mac (see README)
         plist="$HOME/Library/LaunchAgents/net.hq.up.plist"
         case "$act" in
-          on)  mkdir -p "$(dirname "$plist")"
-               cat > "$plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>Label</key><string>net.hq.up</string>
-<key>ProgramArguments</key><array><string>$(xmlq "$HQ_DIR")/bin/hq</string><string>up</string></array>
-<key>EnvironmentVariables</key><dict><key>PATH</key><string>$(xmlq "$PATH")</string></dict>
-<key>RunAtLoad</key><true/>
-</dict></plist>
-PLIST
+          on)  mkdir -p "$(dirname "$plist")" "$(dirname "$LAUNCHD_LOG")"
+               launchd_plist > "$plist"
+               autostart_path_check || echo "autostart: continuing; fix the PATH as shown or hq will not start at login" >&2
                launchctl load -w "$plist" && echo "autostart on (launchd)" ;;
           off) launchctl unload "$plist" 2>/dev/null || true; rm -f "$plist"; echo "autostart off" ;;
           status) [ -f "$plist" ] && echo enabled || echo disabled ;;
-          *) echo "usage: hq autostart on|off|status" >&2; exit 2 ;;
+          *) echo "usage: hq autostart on|off|status|show" >&2; exit 2 ;;
         esac ;;
       *) echo "autostart: unsupported OS $(uname)" >&2; exit 1 ;;
     esac ;;

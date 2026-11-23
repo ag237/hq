@@ -5,6 +5,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+- `hq autostart show [launchd|systemd]` prints the autostart unit without installing it.
+- `hq init --issue-example`, `--prompt`; `hq init` asks for the user name and example issue id when run in a terminal.
+- `hq init --remote` and `hq doctor` (with `HQ_SYNC=on`) check that git can push to origin without a prompt (`ls-remote` plus a
+  `push --dry-run`; never pushes). `bin/sync` prints the same diagnosis when it exits 2.
+- `hq adopt` warns when the session later moved to a different directory than the one it started in.
+
+### Changed
+- The macOS launchd agent logs to `~/Library/Logs/hq/autostart.log` and uses a fixed `PATH` (extend it in `~/.config/hq/env`)
+  instead of the `PATH` at the time `hq autostart on` ran. `autostart on` warns about tools it would not find.
+- The profile template allows the Linear tools under both `mcp__linear-server__*` and `mcp__claude_ai_Linear__*`, and its Backup
+  line no longer claims the app repo is what `bin/sync` pushes.
+- `profile.env` values written by `hq init` are validated and quoted (a name with a space no longer breaks sourcing).
+
+### Removed
+- The six `git -C * ...` allow rules from `claude/settings.json`: Claude Code warns about a `*` ahead of the last word, and a `*`
+  mixed with a trailing `:*` never matches. `tests/policy.sh` now rejects both shapes.
+
 ## [0.1.0] - 2026-11-22
 
 First public snapshot.

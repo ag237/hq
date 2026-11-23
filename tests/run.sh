@@ -9,8 +9,30 @@ check "state repo is a separate git repo" test -d "$STATE_REPO/.git"
 check "env points at state repo" contains "$HOME/.config/hq/env" "HQ_STATE_DIR=$STATE_REPO/state/$HOST"
 check "sync enabled once origin exists" contains "$HOME/.config/hq/env" "HQ_SYNC=on"
 check "profile created in state repo" test -f "$STATE_REPO/profiles/t/profile.env"
-check "USER_NAME written to profile" contains "$STATE_REPO/profiles/t/profile.env" "USER_NAME=Tess"
+PV="$SB/pv.sh"   # prints USER_NAME|TEAM|ISSUE_EXAMPLE as bash sees them after sourcing a profile's profile.env
+printf '#!/bin/bash\n. "%s/profiles/$1/profile.env"; printf "%%s|%%s|%%s" "$USER_NAME" "$TEAM" "$ISSUE_EXAMPLE"\n' "$STATE_REPO" > "$PV"; chmod +x "$PV"
+check "USER_NAME written to profile (as sourced)" bash -c '[ "$("$1" t)" = "Tess|TST|TST-123" ]' _ "$PV"
 check "doctor passes" "$HQ" doctor
+echo "init values (profile.env is sourced by bash, so they are validated and quoted)"
+check "init with a two-word name and an explicit example id" "$HQ" init --name v1 --team ABC --user-name "Tess Q" --issue-example ABC-42 --state-repo "$STATE_REPO"
+check "  ...both are sourced back intact" bash -c '[ "$("$1" v1)" = "Tess Q|ABC|ABC-42" ]' _ "$PV"
+check "init defaults the example id to <TEAM>-123" "$HQ" init --name v2 --team XYZ --user-name Tess --state-repo "$STATE_REPO"
+check "  ...so no CHANGEME-123 leaks into a profile that has a team" bash -c '[ "$("$1" v2)" = "Tess|XYZ|XYZ-123" ]' _ "$PV"
+refuse "init rejects a name with command substitution" "$HQ" init --name v3 --user-name 'x$(touch PWNED)' --state-repo "$STATE_REPO"
+refuse "init rejects a name with a quote" "$HQ" init --name v3 --user-name "a'b" --state-repo "$STATE_REPO"
+refuse "init rejects an issue example with a path" "$HQ" init --name v3 --issue-example '../x' --state-repo "$STATE_REPO"
+refuse "init rejects a team with shell characters" "$HQ" init --name v3 --team 'A;B' --state-repo "$STATE_REPO"
+check "a rejected init created nothing" bash -c '[ ! -e "$1/profiles/v3" ] && ! find "$2" -name PWNED | grep -q .' _ "$STATE_REPO" "$SB"
+check "init --prompt asks for both and uses the answers" bash -c 'printf "Pat\nPRJ-7\n" | "$1" init --name p1 --team PRJ --prompt --state-repo "$2" >/dev/null 2>&1 && [ "$("$3" p1)" = "Pat|PRJ|PRJ-7" ]' _ "$HQ" "$STATE_REPO" "$PV"
+check "init --prompt: empty answers take the defaults" bash -c 'printf "\n\n" | "$1" init --name p2 --team PRJ --prompt --state-repo "$2" >/dev/null 2>&1 && [ "$("$3" p2)" = "Test|PRJ|PRJ-123" ]' _ "$HQ" "$STATE_REPO" "$PV"
+check "init --prompt only asks for what the flags left out" bash -c 'printf "PRJ-9\n" | "$1" init --name p3 --team PRJ --user-name Sam --prompt --state-repo "$2" >/dev/null 2>&1 && [ "$("$3" p3)" = "Sam|PRJ|PRJ-9" ]' _ "$HQ" "$STATE_REPO" "$PV"
+check "without a terminal init never waits for input" bash -c '"$1" init --name p4 --team PRJ --state-repo "$2" </dev/null >/dev/null 2>&1 && [ "$("$3" p4)" = "Test|PRJ|PRJ-123" ]' _ "$HQ" "$STATE_REPO" "$PV"
+check "push check ran and created nothing on the remote" bash -c '"$1" doctor | grep -q "can reach and push" && [ -z "$(git --git-dir="$2" for-each-ref)" ]' _ "$HQ" "$SB/remote.git"
+git -C "$STATE_REPO" remote set-url origin "$SB/no-such-remote.git"
+refuse "doctor fails when origin is unreachable" "$HQ" doctor
+check "failure explains itself and names the usual fix" bash -c '"$1" doctor 2>&1 | grep -q "cannot talk to origin" && "$1" doctor 2>&1 | grep -q "gh auth setup-git"' _ "$HQ"
+git -C "$STATE_REPO" remote set-url origin "$SB/remote.git"
+check "doctor passes again once origin is back" "$HQ" doctor
 
 echo "generated config"
 check "pm.md rendered" test -s "$SB/work/.claude/agents/pm.md"
@@ -18,6 +40,9 @@ if grep -rn '{{' "$SB/work/.claude" >/dev/null 2>&1; then bad "no unrendered {{p
 check "settings.json is valid JSON" python3 -I -c 'import json,sys;json.load(open(sys.argv[1]))' "$SB/work/.claude/settings.json"
 check "PM addressed by USER_NAME" contains "$SB/work/.claude/agents/pm.md" "Tess"
 check "no HQ_BIN placeholder text leaked" bash -c '! grep -q "HQ_BIN" "$1"' _ "$SB/work/.claude/settings.json"
+check "both Linear connector namings are allowed" bash -c 'grep -q "mcp__linear-server__get_issue" "$1" && grep -q "mcp__claude_ai_Linear__get_issue" "$1"' _ "$SB/work/.claude/settings.json"
+check "no git -C wildcard rules (they warn at startup or never match)" bash -c '! grep -q "git -C" "$1"' _ "$SB/work/.claude/settings.json"
+check "Backup line: sync pushes the state repo, not the app repo" bash -c 'grep -q "never synced" "$1" && ! grep -q "is a git repo; .bin/sync. pushes it" "$1"' _ "$SB/work/.claude/agents/pm.md"
 
 echo "input validation (no injection, no traversal)"
 S="$SB/work/hq/bin/spawn-worker"
@@ -73,6 +98,41 @@ check "reap removes worktree" "$SB/work/hq/bin/reap-worker" WT-2
 check "reap removed trust entry" bash -c '! grep -q WT-2 "$1"' _ "$CLAUDE_JSON"
 check "reap keeps the row as done" grep -q 'WT-2.*done' "$STATE_REPO/state/$HOST/board.tsv"
 
+echo "adopt"
+mkdir -p "$SB/work/moved-to"
+ENC="$(printf '%s' "$SB/work" | sed 's/[^a-zA-Z0-9]/-/g')"; mkdir -p "$HOME/.claude/projects/$ENC"
+U1=22222222-2222-4222-8222-222222222222; U2=33333333-3333-4333-8333-333333333333
+printf '{"type":"user","cwd":"%s"}\n{"type":"user","cwd":"%s"}\n' "$SB/work" "$SB/work/moved-to" > "$HOME/.claude/projects/$ENC/$U1.jsonl"
+printf '{"type":"user","cwd":"%s"}\n{"type":"user","cwd":"%s"}\n' "$SB/work" "$SB/work" > "$HOME/.claude/projects/$ENC/$U2.jsonl"
+check "adopt a session that moved: warns about the last cwd" bash -c '"$1" adopt "$2" MOVED-1 2>&1 >/dev/null | grep -q "later moved to $3"' _ "$HQ" "$U1" "$SB/work/moved-to"
+check "adopt keeps the first cwd on the board (transcript is found by it)" awk -F'\t' -v c="$SB/work" -v u="$U1" '$1=="MOVED-1" && $3==c && $4==u {f=1} END{exit !f}' "$STATE_REPO/state/$HOST/board.tsv"
+check "adopt of a session that never moved: no warning" bash -c '[ -z "$("$1" adopt "$2" STAY-1 2>&1 >/dev/null)" ]' _ "$HQ" "$U2"
+
+echo "autostart (launchd plist checked with plistlib; launchctl itself needs a real Mac)"
+PL="$SB/plist.xml"
+check "autostart show launchd" bash -c '"$1" autostart show launchd > "$2" 2> "$3"' _ "$HQ" "$PL" "$SB/plist.err"
+check "plist: label, args, RunAtLoad, log paths, fixed PATH" python3 -I - "$PL" "$HQ" "$HOME" <<'PY'
+import os, plistlib, sys
+d = plistlib.load(open(sys.argv[1], "rb")); hq, home = sys.argv[2], sys.argv[3]
+log = home + "/Library/Logs/hq/autostart.log"
+assert d["Label"] == "net.hq.up"
+assert d["ProgramArguments"] == [hq, "up"], d["ProgramArguments"]
+assert d["RunAtLoad"] is True
+assert d["StandardOutPath"] == log and d["StandardErrorPath"] == log, (d.get("StandardOutPath"), d.get("StandardErrorPath"))
+path = d["EnvironmentVariables"]["PATH"]
+assert path == home + "/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", path
+assert path != os.environ["PATH"], "PATH was frozen from the caller's environment"
+PY
+check "plist: log dir is outside the state repo" bash -c '! grep -q "$1" "$2"' _ "$STATE_REPO" "$PL"
+check "missing tool on the launchd PATH is reported with the fix" bash -c 'grep -q "claude. is not on the PATH" "$1" && grep -q "PATH=.*\$PATH:$2" "$1"' _ "$SB/plist.err" "$SB/stubs"
+cp "$HOME/.config/hq/env" "$SB/env.bak"; printf 'PATH="$PATH:%s"\n' "$SB/stubs" >> "$HOME/.config/hq/env"
+check "PATH line in ~/.config/hq/env satisfies the check" bash -c '"$1" autostart show launchd 2>&1 >/dev/null | grep -q .; [ $? -ne 0 ]' _ "$HQ"
+mv "$SB/env.bak" "$HOME/.config/hq/env"
+cp -R "$SB/work/hq" "$SB/work/a&b"
+check "XML-special characters in the install path are escaped" bash -c '"$1" autostart show launchd 2>/dev/null | python3 -I -c "import plistlib,sys;d=plistlib.loads(sys.stdin.buffer.read());assert d[\"ProgramArguments\"][0]==sys.argv[1]" "$1"' _ "$SB/work/a&b/bin/hq"
+check "autostart show systemd" bash -c '"$1" autostart show systemd | grep -q "^ExecStart=$2/bin/hq up"' _ "$HQ" "$SB/work/hq"
+refuse "autostart show rejects an unknown target" "$HQ" autostart show nonsense
+
 echo "sync"
 SYNC="$SB/work/hq/bin/sync"
 check "sync pushes state" "$SYNC"
@@ -90,5 +150,10 @@ printf 'HQ_SYNC=on\nHQ_STATE_DIR=%s\n' "$SB/work/hq/state/x" > "$SB/cfg2/hq/env"
 git -C "$SB/work/hq" init -q
 refuse "sync refuses state inside the app repo" env XDG_CONFIG_HOME="$SB/cfg2" "$SYNC"
 check "HQ_SYNC=off is a no-op" env HQ_SYNC=off "$SYNC"
+git -C "$STATE_REPO" remote set-url origin "$SB/no-such-remote.git"
+echo "x" > "$STATE_REPO/state/$HOST/briefs/after-outage.md"
+check "sync exits 2 and names the cause when origin cannot be used" bash -c 'out="$("$1" 2>&1)"; rc=$?; [ "$rc" = 2 ] && printf "%s" "$out" | grep -q "cannot talk to origin"' _ "$SYNC"
+git -C "$STATE_REPO" remote set-url origin "$SB/remote.git"
+check "sync recovers once origin is back" "$SYNC"
 
 finish

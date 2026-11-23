@@ -74,6 +74,16 @@ out="$(cd "$SB/lintcopy" && XDG_CONFIG_HOME="$SB/none" tests/lint.sh 2>&1)"; rc=
 case "$out" in *"$FAKE"*) bad "lint printed the secret (CI logs of a public repo are public)";; *) ok "lint output withholds the secret";; esac
 case "$out" in *NOTES.md*) ok "lint still says which file";; *) bad "lint did not name the file";; esac
 
+PW="$(rep p 12)"
+# a stub ssh that fails at once and echoes a credentialed URL, as some git/transport errors do (a real network is slow and flaky in CI)
+printf '#!/bin/sh\necho "fatal: unable to access ssh://bot:%s@example.org/x.git" >&2\nexit 255\n' "$PW" > "$SB/stubs/failssh"; chmod +x "$SB/stubs/failssh"
+git -C "$STATE_REPO" remote set-url origin "ssh://bot@example.org/x.git"
+out="$(GIT_SSH_COMMAND="$SB/stubs/failssh" "$HQ" doctor 2>&1)"; rc=$?
+git -C "$STATE_REPO" remote set-url origin "$SB/remote.git"
+[ "$rc" != 0 ] && ok "doctor's push check fails when origin cannot be reached" || bad "doctor passed an unreachable remote"
+case "$out" in *"unable to access"*) ok "the stub's error reached the diagnosis (so the masking check below is not vacuous)";; *) bad "diagnosis did not include git's error";; esac
+case "$out" in *"$PW"*) bad "doctor's push check printed the password from a URL";; *) ok "push check masks credentials in URLs";; esac
+
 echo "permissions"
 ST="$STATE_REPO/state/$(hostname -s)"
 [ "$(mode "$ST")" = 700 ] && ok "state dir is owner-only (700)" || bad "state dir is not 700"
