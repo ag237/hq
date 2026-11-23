@@ -18,6 +18,9 @@ if grep -rn '{{' "$SB/work/.claude" >/dev/null 2>&1; then bad "no unrendered {{p
 check "settings.json is valid JSON" python3 -I -c 'import json,sys;json.load(open(sys.argv[1]))' "$SB/work/.claude/settings.json"
 check "PM addressed by USER_NAME" contains "$SB/work/.claude/agents/pm.md" "Tess"
 check "no HQ_BIN placeholder text leaked" bash -c '! grep -q "HQ_BIN" "$1"' _ "$SB/work/.claude/settings.json"
+check "both Linear connector namings are allowed" bash -c 'grep -q "mcp__linear-server__get_issue" "$1" && grep -q "mcp__claude_ai_Linear__get_issue" "$1"' _ "$SB/work/.claude/settings.json"
+check "no git -C wildcard rules (they warn at startup or never match)" bash -c '! grep -q "git -C" "$1"' _ "$SB/work/.claude/settings.json"
+check "Backup line: sync pushes the state repo, not the app repo" bash -c 'grep -q "never synced" "$1" && ! grep -q "is a git repo; .bin/sync. pushes it" "$1"' _ "$SB/work/.claude/agents/pm.md"
 
 echo "input validation (no injection, no traversal)"
 S="$SB/work/hq/bin/spawn-worker"

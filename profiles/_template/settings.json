@@ -6,7 +6,13 @@
       "mcp__linear-server__list_comments",
       "mcp__linear-server__list_issue_statuses",
       "mcp__linear-server__save_comment",
-      "mcp__linear-server__save_issue"
+      "mcp__linear-server__save_issue",
+      "mcp__claude_ai_Linear__list_issues",
+      "mcp__claude_ai_Linear__get_issue",
+      "mcp__claude_ai_Linear__list_comments",
+      "mcp__claude_ai_Linear__list_issue_statuses",
+      "mcp__claude_ai_Linear__save_comment",
+      "mcp__claude_ai_Linear__save_issue"
     ]
   }
 }
