@@ -63,6 +63,8 @@ echo "commit metadata (public history)"
 if git rev-parse --git-dir >/dev/null 2>&1 && git rev-parse -q --verify HEAD >/dev/null 2>&1; then
   hits="$(git log HEAD --format='%h %B' | grep -iE 'claude\.ai/(code/)?session|session_[0-9a-f]{8}' | cut -c1-14)"
   [ -z "$hits" ] && ok "no Claude session links in commit messages" || bad "commit messages contain a Claude session link (rewrite them out before publishing)"
+  hits="$(git log HEAD --format=%B | grep -iE '^(co-authored-by:.*(claude|anthropic)|claude-session:)')"
+  [ -z "$hits" ] && ok "no Claude attribution trailers in commit messages" || bad "commit messages contain Claude attribution trailers"
   hits="$(git log HEAD --format='%an <%ae>%n%cn <%ce>' | sort -u | grep -viE 'noreply' )"
   [ -z "$hits" ] && ok "every author/committer uses a noreply address" || bad "author/committer is not a noreply address" "$(printf '%s\n' "$hits" | sed 's/<.*@/<...@/')"
 fi
