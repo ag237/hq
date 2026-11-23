@@ -20,8 +20,9 @@ jobs:
   macos:
     # macOS ships bash 3.2 and BSD tools: this is the portability check
     # GitHub-hosted runners only: other forges (Forgejo/Gitea) have no macOS runner, so skip there instead of waiting forever
+    # runs-on falls back to a Linux label elsewhere so a runner can pick the job up and evaluate the if (a job nobody can pick up never gets skipped)
     if: ${{ github.server_url == 'https://github.com' }}
-    runs-on: macos-latest
+    runs-on: ${{ github.server_url == 'https://github.com' && 'macos-latest' || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
