@@ -59,6 +59,14 @@ if [ -f "$DL" ]; then
   [ -z "$hits" ] && ok "denylist ($DL) has no hits" || bad "denylist hits" "$hits"
 else echo "  skip  no local denylist at $DL (put one regex per line there: your names, hosts, internal domains)"; fi
 
+echo "commit metadata (public history)"
+if git rev-parse --git-dir >/dev/null 2>&1 && git rev-parse -q --verify HEAD >/dev/null 2>&1; then
+  hits="$(git log HEAD --format='%h %B' | grep -iE 'claude\.ai/(code/)?session|session_[0-9a-f]{8}' | cut -c1-14)"
+  [ -z "$hits" ] && ok "no Claude session links in commit messages" || bad "commit messages contain a Claude session link (rewrite them out before publishing)"
+  hits="$(git log HEAD --format='%an <%ae>%n%cn <%ce>' | sort -u | grep -viE 'noreply' )"
+  [ -z "$hits" ] && ok "every author/committer uses a noreply address" || bad "author/committer is not a noreply address" "$(printf '%s\n' "$hits" | sed 's/<.*@/<...@/')"
+fi
+
 echo "workflows"
 if ls .github/workflows/*.yml >/dev/null 2>&1; then
   hits="$(grep -nE '^[[:space:]]*-?[[:space:]]*uses:' .github/workflows/*.yml | grep -vE 'uses:[[:space:]]*[^@[:space:]]+@[0-9a-f]{40}([[:space:]]|$)' )"
