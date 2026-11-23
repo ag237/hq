@@ -9,7 +9,7 @@
 # hq revive <ISSUE>      reopen a parked/done worker by EXACT board issue id (resumes its conversation)
 # hq find <term>         search board, briefs and old transcripts for a keyword (case-insensitive)
 # hq adopt <uuid> <ISSUE> [cwd]   put a pre-existing session on the board as `parked`
-# hq autostart on|off|status      run `hq up` at WSL boot via a systemd user unit
+# hq autostart on|off|status|show  run `hq up` at login: systemd user unit (Linux/WSL) or launchd agent (macOS); show prints it
 set -euo pipefail
 _s="${BASH_SOURCE[0]}"; while [ -L "$_s" ]; do _d="$(cd "$(dirname "$_s")" && pwd)"; _s="$(readlink "$_s")"; case "$_s" in /*) ;; *) _s="$_d/$_s";; esac; done
 HQ_DIR="$(cd "$(dirname "$_s")/.." && pwd)"; . "$HQ_DIR/bin/lib.sh"
@@ -145,6 +145,37 @@ NEXT
 }
 
 xmlq() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
+# launchd starts agents with a minimal environment, so the plist carries a fixed PATH instead of whatever PATH `hq autostart on`
+# happened to run under. Extra directories go in ~/.config/hq/env (PATH="$PATH:/some/dir"), which every hq command sources.
+LAUNCHD_PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+LAUNCHD_LOG="$HOME/Library/Logs/hq/autostart.log"   # outside the state repo, which sync would commit
+launchd_plist() {
+  cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>net.hq.up</string>
+<key>ProgramArguments</key><array><string>$(xmlq "$HQ_DIR")/bin/hq</string><string>up</string></array>
+<key>EnvironmentVariables</key><dict><key>PATH</key><string>$(xmlq "$LAUNCHD_PATH")</string></dict>
+<key>RunAtLoad</key><true/>
+<key>StandardOutPath</key><string>$(xmlq "$LAUNCHD_LOG")</string>
+<key>StandardErrorPath</key><string>$(xmlq "$LAUNCHD_LOG")</string>
+</dict></plist>
+PLIST
+}
+# Warn (stderr) about required tools that the launchd PATH plus ~/.config/hq/env would not find at login.
+autostart_path_check() {
+  local t missing=0 where
+  for t in tmux git python3 claude; do
+    if ! ( PATH="$LAUNCHD_PATH"; [ ! -f "$HQ_CONF/env" ] || . "$HQ_CONF/env"; command -v "$t" >/dev/null 2>&1 ); then
+      missing=1; where="$(command -v "$t" 2>/dev/null || true)"
+      echo "autostart: '$t' is not on the PATH launchd will use at login${where:+ (it is at $where)}" >&2
+      [ -z "$where" ] || echo "           add it: echo 'PATH=\"\$PATH:$(dirname "$where")\"' >> $HQ_CONF/env" >&2
+    fi
+  done
+  return "$missing"
+}
 require_row() { # <issue> -> sets repo cwd uuid status
   need_issue "$1"; local row; row="$(board_row "$1")"
   [ -n "$row" ] || { echo "hq: no board row with exact id '$1'. Try: hq find <term>" >&2; exit 3; }
@@ -234,6 +265,15 @@ for l in open(sys.argv[1]):
     echo "adopted $uuid as $issue (parked, cwd $cwd). Next: hq revive $issue" ;;
   autostart)
     act="${2:-status}"
+    if [ "$act" = show ]; then   # print what `on` would install (no side effects); target defaults to this OS
+      tgt="${3:-}"; [ -n "$tgt" ] || case "$(uname)" in Darwin) tgt=launchd;; *) tgt=systemd;; esac
+      case "$tgt" in
+        launchd) launchd_plist; autostart_path_check || true ;;
+        systemd) sed -e "s|@HQ_DIR@|$HQ_DIR|g" -e "s|@PATH@|$PATH|g" "$HQ_DIR/systemd/hq.service" ;;
+        *) echo "usage: hq autostart show [launchd|systemd]" >&2; exit 2 ;;
+      esac
+      exit 0
+    fi
     case "$(uname)" in
       Linux)
         unit="$HOME/.config/systemd/user/hq.service"
@@ -245,26 +285,18 @@ for l in open(sys.argv[1]):
                echo "autostart on: 'hq up' runs whenever this user's systemd starts (WSL: when the distro starts)" ;;
           off) systemctl --user disable hq.service 2>/dev/null || true; rm -f "$unit"; systemctl --user daemon-reload 2>/dev/null || true; echo "autostart off" ;;
           status) systemctl --user is-enabled hq.service 2>&1 | head -1 || true ;;
-          *) echo "usage: hq autostart on|off|status" >&2; exit 2 ;;
+          *) echo "usage: hq autostart on|off|status|show" >&2; exit 2 ;;
         esac ;;
-      Darwin)   # launchd; written but not tested by the author
+      Darwin)   # launchd; not yet tested on a real Mac (see README)
         plist="$HOME/Library/LaunchAgents/net.hq.up.plist"
         case "$act" in
-          on)  mkdir -p "$(dirname "$plist")"
-               cat > "$plist" <<PLIST
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>Label</key><string>net.hq.up</string>
-<key>ProgramArguments</key><array><string>$(xmlq "$HQ_DIR")/bin/hq</string><string>up</string></array>
-<key>EnvironmentVariables</key><dict><key>PATH</key><string>$(xmlq "$PATH")</string></dict>
-<key>RunAtLoad</key><true/>
-</dict></plist>
-PLIST
+          on)  mkdir -p "$(dirname "$plist")" "$(dirname "$LAUNCHD_LOG")"
+               launchd_plist > "$plist"
+               autostart_path_check || echo "autostart: continuing; fix the PATH as shown or hq will not start at login" >&2
                launchctl load -w "$plist" && echo "autostart on (launchd)" ;;
           off) launchctl unload "$plist" 2>/dev/null || true; rm -f "$plist"; echo "autostart off" ;;
           status) [ -f "$plist" ] && echo enabled || echo disabled ;;
-          *) echo "usage: hq autostart on|off|status" >&2; exit 2 ;;
+          *) echo "usage: hq autostart on|off|status|show" >&2; exit 2 ;;
         esac ;;
       *) echo "autostart: unsupported OS $(uname)" >&2; exit 1 ;;
     esac ;;

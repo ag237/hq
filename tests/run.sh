@@ -76,6 +76,31 @@ check "reap removes worktree" "$SB/work/hq/bin/reap-worker" WT-2
 check "reap removed trust entry" bash -c '! grep -q WT-2 "$1"' _ "$CLAUDE_JSON"
 check "reap keeps the row as done" grep -q 'WT-2.*done' "$STATE_REPO/state/$HOST/board.tsv"
 
+echo "autostart (launchd plist checked with plistlib; launchctl itself needs a real Mac)"
+PL="$SB/plist.xml"
+check "autostart show launchd" bash -c '"$1" autostart show launchd > "$2" 2> "$3"' _ "$HQ" "$PL" "$SB/plist.err"
+check "plist: label, args, RunAtLoad, log paths, fixed PATH" python3 -I - "$PL" "$HQ" "$HOME" <<'PY'
+import os, plistlib, sys
+d = plistlib.load(open(sys.argv[1], "rb")); hq, home = sys.argv[2], sys.argv[3]
+log = home + "/Library/Logs/hq/autostart.log"
+assert d["Label"] == "net.hq.up"
+assert d["ProgramArguments"] == [hq, "up"], d["ProgramArguments"]
+assert d["RunAtLoad"] is True
+assert d["StandardOutPath"] == log and d["StandardErrorPath"] == log, (d.get("StandardOutPath"), d.get("StandardErrorPath"))
+path = d["EnvironmentVariables"]["PATH"]
+assert path == home + "/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin", path
+assert path != os.environ["PATH"], "PATH was frozen from the caller's environment"
+PY
+check "plist: log dir is outside the state repo" bash -c '! grep -q "$1" "$2"' _ "$STATE_REPO" "$PL"
+check "missing tool on the launchd PATH is reported with the fix" bash -c 'grep -q "claude. is not on the PATH" "$1" && grep -q "PATH=.*\$PATH:$2" "$1"' _ "$SB/plist.err" "$SB/stubs"
+cp "$HOME/.config/hq/env" "$SB/env.bak"; printf 'PATH="$PATH:%s"\n' "$SB/stubs" >> "$HOME/.config/hq/env"
+check "PATH line in ~/.config/hq/env satisfies the check" bash -c '"$1" autostart show launchd 2>&1 >/dev/null | grep -q .; [ $? -ne 0 ]' _ "$HQ"
+mv "$SB/env.bak" "$HOME/.config/hq/env"
+cp -R "$SB/work/hq" "$SB/work/a&b"
+check "XML-special characters in the install path are escaped" bash -c '"$1" autostart show launchd 2>/dev/null | python3 -I -c "import plistlib,sys;d=plistlib.loads(sys.stdin.buffer.read());assert d[\"ProgramArguments\"][0]==sys.argv[1]" "$1"' _ "$SB/work/a&b/bin/hq"
+check "autostart show systemd" bash -c '"$1" autostart show systemd | grep -q "^ExecStart=$2/bin/hq up"' _ "$HQ" "$SB/work/hq"
+refuse "autostart show rejects an unknown target" "$HQ" autostart show nonsense
+
 echo "sync"
 SYNC="$SB/work/hq/bin/sync"
 check "sync pushes state" "$SYNC"
