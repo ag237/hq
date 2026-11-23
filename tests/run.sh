@@ -11,6 +11,12 @@ check "sync enabled once origin exists" contains "$HOME/.config/hq/env" "HQ_SYNC
 check "profile created in state repo" test -f "$STATE_REPO/profiles/t/profile.env"
 check "USER_NAME written to profile" contains "$STATE_REPO/profiles/t/profile.env" "USER_NAME=Tess"
 check "doctor passes" "$HQ" doctor
+check "push check ran and created nothing on the remote" bash -c '"$1" doctor | grep -q "can reach and push" && [ -z "$(git --git-dir="$2" for-each-ref)" ]' _ "$HQ" "$SB/remote.git"
+git -C "$STATE_REPO" remote set-url origin "$SB/no-such-remote.git"
+refuse "doctor fails when origin is unreachable" "$HQ" doctor
+check "failure explains itself and names the usual fix" bash -c '"$1" doctor 2>&1 | grep -q "cannot talk to origin" && "$1" doctor 2>&1 | grep -q "gh auth setup-git"' _ "$HQ"
+git -C "$STATE_REPO" remote set-url origin "$SB/remote.git"
+check "doctor passes again once origin is back" "$HQ" doctor
 
 echo "generated config"
 check "pm.md rendered" test -s "$SB/work/.claude/agents/pm.md"
@@ -118,5 +124,10 @@ printf 'HQ_SYNC=on\nHQ_STATE_DIR=%s\n' "$SB/work/hq/state/x" > "$SB/cfg2/hq/env"
 git -C "$SB/work/hq" init -q
 refuse "sync refuses state inside the app repo" env XDG_CONFIG_HOME="$SB/cfg2" "$SYNC"
 check "HQ_SYNC=off is a no-op" env HQ_SYNC=off "$SYNC"
+git -C "$STATE_REPO" remote set-url origin "$SB/no-such-remote.git"
+echo "x" > "$STATE_REPO/state/$HOST/briefs/after-outage.md"
+check "sync exits 2 and names the cause when origin cannot be used" bash -c 'out="$("$1" 2>&1)"; rc=$?; [ "$rc" = 2 ] && printf "%s" "$out" | grep -q "cannot talk to origin"' _ "$SYNC"
+git -C "$STATE_REPO" remote set-url origin "$SB/remote.git"
+check "sync recovers once origin is back" "$SYNC"
 
 finish

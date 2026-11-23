@@ -75,6 +75,29 @@ tmo() { # tmo <seconds> cmd...   (GNU timeout, Homebrew gtimeout, or no timeout)
   else "$@"; fi
 }
 
+# Can git reach and authenticate to the state repo's origin with nobody at the keyboard (no password, no ssh passphrase)?
+# bin/sync runs unattended, so a prompt means it fails. READ-ONLY: ls-remote, then a --dry-run push of a throwaway empty commit
+# (a dry run only talks to the remote; nothing is ever created there). Prints a diagnosis to stderr on failure, nothing on success.
+sync_check() { # <repo>
+  local repo=$1 out rc=0
+  git -C "$repo" remote get-url origin >/dev/null 2>&1 || { echo "sync check: $repo has no origin remote" >&2; return 1; }
+  out="$( ( export GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes"
+            export GIT_AUTHOR_NAME=hq GIT_AUTHOR_EMAIL=hq@localhost GIT_COMMITTER_NAME=hq GIT_COMMITTER_EMAIL=hq@localhost
+            cd "$repo" || exit 1
+            tmo 30 git ls-remote --heads origin >/dev/null || exit 1
+            obj="$(git commit-tree "$(git hash-object -t tree -w /dev/null)" -m "hq push check")" || exit 1
+            tmo 30 git push --dry-run -q origin "$obj:refs/heads/hq-push-check" >/dev/null ) 2>&1 )" || rc=$?
+  [ "$rc" != 0 ] || return 0
+  {
+    echo "sync check: git cannot talk to origin without a prompt, so bin/sync would fail (exit 2). git said:"
+    # first lines only, with any user:password@ in a URL masked
+    printf '%s\n' "$out" | grep -v '^$' | head -3 | sed -E -e 's#(://)[^/@[:space:]]*@#\1***@#g' -e 's/^/    /'
+    echo "  Fix the credentials, then re-run 'hq doctor'. GitHub over HTTPS: 'gh auth setup-git'. Other HTTPS hosts: configure a git"
+    echo "  credential helper. SSH: the key must be usable without a passphrase prompt (ssh-add it to a running ssh-agent)."
+  } >&2
+  return 1
+}
+
 # tmux wrapper. HQ_SOCKET selects a private tmux server (tests); unset = the normal one.
 tm() { tmux ${HQ_SOCKET:+-L "$HQ_SOCKET"} "$@"; }
 has_window() { tm list-windows -t "$SESSION" -F '#W' 2>/dev/null | grep -qx "$1"; }

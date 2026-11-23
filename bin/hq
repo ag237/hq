@@ -84,6 +84,13 @@ doctor_cmd() { # returns 1 if a REQUIRED tool is missing
   return "$missing"
 }
 
+doctor_sync() { # when sync is on, check that git can push to origin unattended (returns 1 if not)
+  [ "${HQ_SYNC:-off}" = on ] || return 0
+  local repo
+  repo="$(git -C "$STATE" rev-parse --show-toplevel 2>/dev/null)" || { echo "  MISSING  state repo ($STATE is not inside a git repo; HQ_SYNC=on needs one: hq init --state-repo DIR)"; return 1; }
+  if sync_check "$repo"; then echo "  ok       sync: git can reach and push to origin without a prompt"; else echo "  FAILED   sync: see above"; return 1; fi
+}
+
 init_cmd() {
   local name=work team=CHANGEME workdir="" statedir="" staterepo="" remote="" username="" sync="" force=0 pdir workd
   while [ $# -gt 0 ]; do case "$1" in
@@ -120,6 +127,9 @@ USAGE
     [ -n "$sync" ] || { git -C "$staterepo" remote get-url origin >/dev/null 2>&1 && sync=on || sync=off; }
   fi
   [ -n "$sync" ] || sync=off
+  if [ -n "$staterepo" ] && [ -n "$remote" ] && [ "$sync" = on ]; then   # warn early: the first sync would otherwise fail with a bare exit 2
+    sync_check "$staterepo" || echo "hq init: continuing, but fix the above before relying on sync (check again with: hq doctor)" >&2
+  fi
   [ -n "$username" ] || username="$(git config user.name 2>/dev/null | awk '{print $1}')"; [ -n "$username" ] || username="${USER:-CHANGEME}"
   mkdir -p "$HQ_CONF" "$profdir"; pdir="$profdir/$name"
   if [ -d "$pdir" ] && [ "$force" = 0 ]; then echo "keeping existing profile $pdir (--force to recreate)"
@@ -185,7 +195,7 @@ require_row() { # <issue> -> sets repo cwd uuid status
 case "${1:-up}" in init|doctor) ;; *) need_profile ;; esac
 case "${1:-up}" in
   init) shift; init_cmd "$@" ;;
-  doctor) echo "hq requirements:"; doctor_cmd ;;
+  doctor) echo "hq requirements:"; rc=0; doctor_cmd || rc=1; doctor_sync || rc=1; exit "$rc" ;;
   config) gen_config; echo "generated $HOME_DIR/.claude (profile: $PROFILE from $PROFILE_DIR, state: $STATE)" ;;
   up) up; if [ -t 1 ] && [ -z "${TMUX:-}" ] && [ -z "${HQ_SOCKET:-}" ]; then exec tmux attach -t "$SESSION"; fi ;;
   status)
