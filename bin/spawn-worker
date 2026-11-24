@@ -1,15 +1,28 @@
 #!/usr/bin/env bash
 # spawn-worker [--plan] [--model <m>] [--read-only] <repo> <ISSUE> "<brief>"     worktree worker (code/IaC changes -> PR)
 # spawn-worker [--read-only] --ops <ISSUE> "<brief>"      ops worker: runs in ~/home, no worktree/branch
+# spawn-worker --remote <name> <ISSUE> "<brief>"          remote worker: board row only, no tmux window; start it with remote-task
 set -euo pipefail
 _s="${BASH_SOURCE[0]}"; while [ -L "$_s" ]; do _d="$(cd "$(dirname "$_s")" && pwd)"; _s="$(readlink "$_s")"; case "$_s" in /*) ;; *) _s="$_d/$_s";; esac; done
 HQ_DIR="$(cd "$(dirname "$_s")/.." && pwd)"; . "$HQ_DIR/bin/lib.sh"; need_profile
-READ_ONLY=0 OPS=0 PLAN=0 MODEL="" args=()
+READ_ONLY=0 OPS=0 PLAN=0 MODEL="" REMOTE="" args=()
 while [ $# -gt 0 ]; do case "$1" in
   --read-only) READ_ONLY=1;; --ops) OPS=1;; --plan) PLAN=1;;
+  --remote) [ $# -ge 2 ] || { echo "--remote needs a name" >&2; exit 2; }; REMOTE=$2; shift;;
   --model) [ $# -ge 2 ] || { echo "--model needs a value" >&2; exit 2; }; MODEL=$2; shift;;
   *) args+=("$1");; esac; shift; done
 set -- ${args[@]+"${args[@]}"}
+if [ -n "$REMOTE" ]; then
+  [ "$OPS" = 0 ] && [ "$PLAN" = 0 ] && [ "$READ_ONLY" = 0 ] && [ -z "$MODEL" ] || { echo "spawn-worker: --remote cannot be combined with --ops, --plan, --read-only or --model" >&2; exit 2; }
+  [ $# -eq 2 ] || { echo "usage: spawn-worker --remote <name> <ISSUE> \"<brief>\"" >&2; exit 2; }
+  need_remote "$REMOTE"; issue=$1 brief=$2; need_issue "$issue"
+  if [ -n "$(board_row "$issue")" ]; then echo "$issue is already on the board (use: hq revive $issue)" >&2; exit 1; fi
+  ( load_remote "$REMOTE" )   # fails early (and loudly) if the profile has no such remote
+  printf '# Brief for %s (remote %s)\n\n%s\n' "$issue" "$REMOTE" "$brief" > "$BRIEFS/$issue.md"
+  printf '%s\t@%s\t-\t-\tactive\t%s\n' "$issue" "$REMOTE" "$(now)" >> "$BOARD"   # uuid column stays "-" until remote-task sends a request
+  echo "spawned $issue on remote:$REMOTE (no tmux window). Next: post the [PM] brief comment, then: remote-task $issue start --nonce <nonce>"
+  exit 0
+fi
 if [ "$OPS" = 1 ]; then
   [ $# -eq 2 ] || { echo "usage: spawn-worker [--read-only] --ops <ISSUE> \"<brief>\"" >&2; exit 2; }
   repo=- issue=$1 brief=$2

@@ -3,10 +3,10 @@
 # hq init [opts]        set this machine up (local profile, env, PATH link); see `hq init --help`
 # hq doctor              check requirements
 # hq config              regenerate ~/home/.claude (agent, commands, settings) from claude/ + the active profile
-# hq status              board next to live tmux windows
+# hq status              board next to live tmux windows (and the remote workers)
 # hq down                kill the tmux session (state stays on disk; `hq up` resumes active workers)
 # hq park <ISSUE>        close a worker's window but keep its session/worktree (not resumed by `hq up`)
-# hq revive <ISSUE>      reopen a parked/done worker by EXACT board issue id (resumes its conversation)
+# hq revive <ISSUE> [--nonce N]  reopen a parked/done worker by EXACT board issue id (resumes its conversation; remote workers get a follow-up request)
 # hq find <term>         search board, briefs and old transcripts for a keyword (case-insensitive)
 # hq adopt <uuid> <ISSUE> [cwd]   put a pre-existing session on the board as `parked`
 # hq autostart on|off|status|show  run `hq up` at login: systemd user unit (Linux/WSL) or launchd agent (macOS); show prints it
@@ -60,6 +60,7 @@ up() {
     while IFS=$'\t' read -r issue repo cwd uuid status _; do
       [ -n "${issue:-}" ] || continue
       [ "$status" = active ] || continue          # parked/done are NOT resumed on rebuild
+      is_remote "$repo" && continue               # remote workers have no tmux window; the remote keeps running by itself
       has_window "$issue" || { start_worker "$issue" "$repo" "$cwd" "$uuid" && echo "hq: resumed worker $issue"; }
     done < "$BOARD"
   fi
@@ -223,6 +224,10 @@ case "${1:-up}" in
   status)
     echo "== board =="; [ -s "$BOARD" ] && column -t -s$'\t' "$BOARD" || echo "(empty)"
     echo; echo "== tmux =="; tm list-windows -t "$SESSION" 2>/dev/null || echo "(no session)"
+    if [ -s "$BOARD" ] && awk -F'\t' '$2 ~ /^@/{f=1} END{exit !f}' "$BOARD"; then
+      echo; echo "== remote (no tmux window; live state: remote-status <ISSUE>) =="
+      awk -F'\t' '$2 ~ /^@/{sub(/^@/,"",$2); printf "%s  remote:%s  %s  %s\n", $1, $2, $5, $4}' "$BOARD"   # plain awk: column may be absent (CI)
+    fi
     echo; echo "== heartbeat =="
     if [ -s "$STATE/heartbeat" ]; then
       python3 -I - "$STATE/heartbeat" <<'PY'
@@ -237,10 +242,24 @@ PY
   park)
     [ $# -eq 2 ] || { echo "usage: hq park <ISSUE>" >&2; exit 2; }
     require_row "$2"; [ "$status" != "done" ] || { echo "$2 is done, not parked" >&2; exit 1; }
-    tm kill-window -t "$SESSION:$2" 2>/dev/null || true; board_set "$2" parked; echo "parked $2" ;;
+    if is_remote "$repo"; then
+      board_set "$2" parked
+      echo "parked $2 (remote:${repo#@}; board row only. Parking does NOT stop the remote: check 'remote-status $2' first)"
+    else tm kill-window -t "$SESSION:$2" 2>/dev/null || true; board_set "$2" parked; echo "parked $2"; fi ;;
   revive)
-    [ $# -eq 2 ] || { echo "usage: hq revive <ISSUE>   (exact id; use 'hq find' for fuzzy)" >&2; exit 2; }
+    nonce_args=()
+    if [ $# -eq 4 ] && [ "$3" = --nonce ]; then nonce_args=(--nonce "$4"); set -- "$1" "$2"; fi
+    [ $# -eq 2 ] || { echo "usage: hq revive <ISSUE> [--nonce HEX32]   (exact id; use 'hq find' for fuzzy)" >&2; exit 2; }
     require_row "$2"
+    if is_remote "$repo"; then   # revive = a follow-up request; the remote starts a fresh run and re-reads the tracker thread
+      if [ "${#nonce_args[@]}" = 0 ]; then   # a follow-up without a matching [PM] comment is always dropped by the remote's gate, so send nothing
+        echo "hq: $2 is a remote worker: a revive is a follow-up request, and the remote acts only on a tracker comment that carries the same nonce." >&2
+        echo "    1. post a comment whose first line is: [PM] brief nonce=$("$HQ_DIR/bin/remote-task" --new-nonce) mode=followup   (new instruction below it)" >&2
+        echo "    2. then run: hq revive $2 --nonce <that nonce>" >&2
+        exit 2
+      fi
+      "$HQ_DIR/bin/remote-task" "${nonce_args[@]}" "$2" followup; exit
+    fi
     if has_window "$2"; then echo "$2 already live in tmux $SESSION:$2"; board_set "$2" active; exit 0; fi
     if [ "$repo" != "-" ] && [ ! -d "$cwd" ]; then
       make_worktree "$HOME_DIR/$repo" "$cwd" "$(printf '%s' "$2" | tr 'A-Z' 'a-z')"

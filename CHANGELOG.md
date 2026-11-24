@@ -6,6 +6,7 @@ All notable changes to this project are documented here. The format follows
 ## [Unreleased]
 
 ### Added
+- Remote workers: `spawn-worker --remote NAME`, `bin/remote-task` (HMAC-signed POST, nonce, re-signed retries), `bin/remote-status` (ssh status query), `@NAME` board rows handled by `hq up/status/park/revive` and `reap-worker`, profile files `remotes/NAME.env`, and remote-aware `/dispatch`, `/checkin`, `/review`, `/park`, `/revive`.
 - `hq autostart show [launchd|systemd]` prints the autostart unit without installing it.
 - `hq init --issue-example`, `--prompt`; `hq init` asks for the user name and example issue id when run in a terminal.
 - `hq init --remote` and `hq doctor` (with `HQ_SYNC=on`) check that git can push to origin without a prompt (`ls-remote` plus a

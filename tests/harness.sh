@@ -7,7 +7,7 @@ exec < /dev/null   # never let a command under test (e.g. hq init) wait for a pe
 HQ_SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SB="$(mktemp -d "${TMPDIR:-/tmp}/hq-test.XXXXXX")"; SB="$(cd "$SB" && pwd -P)"
 SOCK="hqtest-$$"
-cleanup() { tmux -L "$SOCK" kill-server 2>/dev/null; rm -rf "$SB"; }   # private socket only, never the default server
+cleanup() { tmux -L "$SOCK" kill-server 2>/dev/null; [ -z "${STUB_PID:-}" ] || kill "$STUB_PID" 2>/dev/null; rm -rf "$SB"; }   # private socket only, never the default server
 trap cleanup EXIT
 
 export HOME="$SB/home" XDG_CONFIG_HOME="$SB/home/.config" XDG_STATE_HOME="$SB/home/.state" HQ_SOCKET="$SOCK" \

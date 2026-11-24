@@ -108,6 +108,105 @@ check "adopt a session that moved: warns about the last cwd" bash -c '"$1" adopt
 check "adopt keeps the first cwd on the board (transcript is found by it)" awk -F'\t' -v c="$SB/work" -v u="$U1" '$1=="MOVED-1" && $3==c && $4==u {f=1} END{exit !f}' "$STATE_REPO/state/$HOST/board.tsv"
 check "adopt of a session that never moved: no warning" bash -c '[ -z "$("$1" adopt "$2" STAY-1 2>&1 >/dev/null)" ]' _ "$HQ" "$U2"
 
+echo "remote workers (local stub server verifies the V2 signature; ssh is a stub; no real host is contacted)"
+RP="$STATE_REPO/profiles/t/remotes"; RB="$STATE_REPO/state/$HOST/board.tsv"
+refuse "--remote for an unconfigured remote is refused" "$S" --remote myremote REM-0 "x"
+refuse "remote name must be lowercase letters, digits, dashes" "$S" --remote 'My_Remote' REM-0 "x"
+refuse "--remote cannot be combined with --ops" "$S" --remote myremote --ops REM-0 "x"
+SECRET="$SB/remote.secret"; printf 'sekrit-%s' "$(printf 'z%.0s' $(seq 1 20))" > "$SECRET"; chmod 600 "$SECRET"
+python3 -I "$HQ_SRC/tests/remote_stub.py" "$SECRET" "$SB/stub.port" "$SB/stub.log" & STUB_PID=$!
+for _ in $(seq 1 50); do [ -s "$SB/stub.port" ] && break; sleep 0.1; done
+PORT="$(cat "$SB/stub.port")"
+mkdir -p "$RP"
+printf 'REMOTE_URL=http://127.0.0.1:%s/webhooks/pm-task\nREMOTE_SECRET_FILE=%s\nREMOTE_SSH=myremote-pm\nREMOTE_STATUS_CMD=%s\nREMOTE_LABEL=myremote\n' "$PORT" "$SECRET" "'~/bin/pm-status'" > "$RP/myremote.env"
+cat > "$SB/stubs/ssh" <<STUB
+#!/bin/sh
+printf '%s\n' "\$*" >> "$SB/ssh.log"
+case "\$*" in *" recent") echo '{"state":"finished"}'; echo '{"state":"working"}';; *) echo '{"state":"working","started":1,"ended":null,"end_reason":null,"last_activity":2,"last_activity_desc":"x","tools":3,"tokens":4}';; esac
+STUB
+chmod +x "$SB/stubs/ssh"
+check "spawn --remote adds a row, no tmux window" bash -c '"$1" --remote myremote REM-1 "do the thing" && sleep 1 && ! tmux -L "$2" list-windows -t hq -F "#W" | grep -qx REM-1' _ "$S" "$SOCK"
+check "board row: @name, cwd -, uuid -, active" awk -F'\t' '$1=="REM-1" && $2=="@myremote" && $3=="-" && $4=="-" && $5=="active" {f=1} END{exit !f}' "$RB"
+check "brief stored" contains "$STATE_REPO/state/$HOST/briefs/REM-1.md" "do the thing"
+refuse "a second spawn for the same issue is refused" "$S" --remote myremote REM-1 "again"
+NONCE="$("$SB/work/hq/bin/remote-task" --new-nonce)"
+check "--new-nonce prints 32 hex characters" bash -c '[ "$(printf %s "$1" | grep -cE "^[0-9a-f]{32}$")" = 1 ]' _ "$NONCE"
+refuse "remote-task rejects a malformed nonce" "$SB/work/hq/bin/remote-task" --nonce XYZ REM-1 start
+refuse "remote-task rejects an unknown mode" "$SB/work/hq/bin/remote-task" --nonce "$NONCE" REM-1 restart
+RT="$SB/work/hq/bin/remote-task"
+OUTF="$SB/rt.out"; "$RT" --nonce "$NONCE" REM-1 start > "$OUTF" 2>&1; RC=$?
+check "remote-task start: exit 0, accepted, nonce echoed" bash -c '[ "$1" = 0 ] && grep -q "^accepted REM-1 mode=start request-id=REM-1-[0-9]* nonce=$2$" "$3"' _ "$RC" "$NONCE" "$OUTF"
+check "stub verified the signature and the exact contract (JSON body, headers, route)" python3 -I - "$SB/stub.log" "$NONCE" <<'PY'
+import json, re, sys
+r = [json.loads(l) for l in open(sys.argv[1])][0]
+assert r["verdict"] == "202", r
+assert r["ct"] == "application/json" and r["path"] == "/webhooks/pm-task"
+assert r["body"] == '{"issue":"REM-1","mode":"start","nonce":"%s"}' % sys.argv[2], r["body"]
+assert re.fullmatch(r"REM-1-\d+", r["rid"]) and re.fullmatch(r"\d+", r["ts"])
+PY
+check "board uuid column holds the request id" bash -c 'awk -F"\t" "\$1==\"REM-1\"{print \$4}" "$1" | grep -qE "^REM-1-[0-9]+$"' _ "$RB"
+cut -c1-9 "$SECRET" > "$SB/needle"   # via a file: the checker's own argv must not contain the secret
+check "the secret never appears in output, state, argv log or process list" bash -c '! grep -rqF -f "$4" "$1" "$2" "$3" 2>/dev/null && ! ps -eo args | grep -qF -f "$4"' _ "$OUTF" "$STATE_REPO" "$SB/claude.log" "$SB/needle"
+"$RT" --nonce "$NONCE" REM-1 start > "$OUTF" 2>&1; "$RT" --nonce "$NONCE" REM-1 start >> "$OUTF" 2>&1
+check "a repeat of the same nonce reuses its request id and is reported as duplicate" bash -c '[ "$(grep -c "^duplicate REM-1 mode=start request-id=$2 " "$1")" = 2 ]' _ "$OUTF" "$(awk -F'\t' '$1=="REM-1"{print $4}' "$RB")"
+refuse "a used nonce cannot be sent for another mode" "$RT" --nonce "$NONCE" REM-1 followup
+check "stub got the same request id each time (never a new id for a nonce)" bash -c '[ "$(grep -c "\"rid\": \"$2\"" "$1")" = 3 ]' _ "$SB/stub.log" "$(awk -F'\t' '$1=="REM-1"{print $4}' "$RB")"
+"$S" --remote myremote DUP-1 "x" >/dev/null; "$RT" --nonce "$("$RT" --new-nonce)" DUP-1 start > "$OUTF" 2>&1; RC=$?
+check "200 status=duplicate -> 'duplicate', exit 0" bash -c '[ "$1" = 0 ] && grep -q "^duplicate DUP-1" "$2"' _ "$RC" "$OUTF"
+"$S" --remote myremote ODD-1 "x" >/dev/null; "$RT" --nonce "$("$RT" --new-nonce)" ODD-1 start > "$OUTF" 2>&1; RC=$?
+check "a 200 whose body is not status=duplicate is an error, not a duplicate" bash -c '[ "$1" = 1 ] && ! grep -q "^duplicate" "$2" && grep -q "unexpected 200" "$2"' _ "$RC" "$OUTF"
+"$S" --remote myremote GATE-1 "x" >/dev/null; "$RT" --nonce "$("$RT" --new-nonce)" GATE-1 start > "$OUTF" 2>&1; RC=$?
+check "200 status=ignored -> gated, exit 6, clear message" bash -c '[ "$1" = 6 ] && grep -q "gate dropped the event" "$2"' _ "$RC" "$OUTF"
+"$S" --remote myremote RATE-1 "x" >/dev/null; "$RT" --nonce "$("$RT" --new-nonce)" RATE-1 start > "$OUTF" 2>&1; RC=$?
+check "429 -> exit 4" bash -c '[ "$1" = 4 ] && grep -q "rate-limited" "$2"' _ "$RC" "$OUTF"
+printf 'other-secret' > "$SB/wrong.secret"; chmod 600 "$SB/wrong.secret"
+sed "s|^REMOTE_SECRET_FILE=.*|REMOTE_SECRET_FILE=$SB/wrong.secret|" "$RP/myremote.env" > "$RP/badsig.env"
+"$S" --remote badsig BADSIG-1 "x" >/dev/null; "$RT" --nonce "$("$RT" --new-nonce)" BADSIG-1 start > "$OUTF" 2>&1; RC=$?
+check "bad signature -> 404 -> exit 3" bash -c '[ "$1" = 3 ] && grep -q "bad signature" "$2"' _ "$RC" "$OUTF"
+chmod 644 "$SB/wrong.secret"; "$RT" --nonce "$("$RT" --new-nonce)" BADSIG-1 start > "$OUTF" 2>&1; RC=$?
+check "a secret file readable by others is refused (exit 1) before anything is sent" bash -c '[ "$1" = 1 ] && grep -q "chmod 600" "$2"' _ "$RC" "$OUTF"
+"$S" --remote myremote FLAKY-1 "x" >/dev/null; HQ_REMOTE_RETRY_WAIT=1 "$RT" --nonce "$("$RT" --new-nonce)" FLAKY-1 start > "$OUTF" 2>&1; RC=$?
+check "dropped connection: retried, accepted" bash -c '[ "$1" = 0 ] && grep -q "^accepted FLAKY-1" "$2"' _ "$RC" "$OUTF"
+check "retry kept the request id and body but was re-signed with a fresh timestamp" python3 -I - "$SB/stub.log" <<'PY'
+import json, sys
+r = [x for x in map(json.loads, open(sys.argv[1])) if x["rid"].startswith("FLAKY-1-")]
+assert [x["verdict"] for x in r] == ["dropped", "202"], r
+assert r[0]["rid"] == r[1]["rid"] and r[0]["body"] == r[1]["body"] and r[0]["ts"] != r[1]["ts"], r
+PY
+DEADPORT="$(python3 -I -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"   # a port nothing listens on
+sed "s|^REMOTE_URL=.*|REMOTE_URL=http://127.0.0.1:$DEADPORT/webhooks/pm-task|" "$RP/myremote.env" > "$RP/down.env"
+"$S" --remote down DOWN-1 "x" >/dev/null; HQ_REMOTE_RETRY_WAIT=0 "$RT" --nonce "$("$RT" --new-nonce)" DOWN-1 start > "$OUTF" 2>&1; RC=$?
+check "a negative HQ_REMOTE_RETRY_WAIT is clamped cleanly (no traceback)" bash -c 'out="$(HQ_REMOTE_RETRY_WAIT=-1 "$1" --nonce "$2" DOWN-1 start 2>&1)"; ! printf "%s" "$out" | grep -q Traceback' _ "$RT" "$("$RT" --new-nonce)"
+check "no connection -> exit 5" bash -c '[ "$1" = 5 ] && grep -q "no connection" "$2"' _ "$RC" "$OUTF"
+refuse "remote-task on a non-remote row is refused" "$RT" --nonce "$NONCE" OPS-1 start
+refuse "remote-task on an unknown issue needs --remote" "$RT" --nonce "$NONCE" NOPE-1 start
+refuse "remote-task without --nonce sends nothing" bash -c 'n=$(wc -l < "$2"); "$1" REM-1 start 2>"$3"; rc=$?; [ "$rc" = 2 ] && grep -q "nonce is required" "$3" && [ "$(wc -l < "$2")" = "$n" ]; [ "$rc" != 2 ]' _ "$RT" "$SB/stub.log" "$SB/nonce.err"
+refuse "profile file with an option-like REMOTE_SSH is rejected" bash -c 'sed "s|^REMOTE_SSH=.*|REMOTE_SSH=-oProxyCommand=x|" "$1" > "$2"; "$3" --remote evil EVIL-1 x' _ "$RP/myremote.env" "$RP/evil.env" "$S"
+RS="$SB/work/hq/bin/remote-status"
+check "remote-status runs the status command over ssh with the request id" bash -c 'out="$("$1" REM-1)"; echo "$out" | grep -q "\"state\":\"working\"" && grep -qE -- "-- myremote-pm ~/bin/pm-status status REM-1-[0-9]+$" "$2"' _ "$RS" "$SB/ssh.log"
+check "remote-status --recent" bash -c '[ "$("$1" --recent myremote | wc -l)" = 2 ] && grep -q "pm-status recent$" "$2"' _ "$RS" "$SB/ssh.log"
+check "remote-status for a row nothing was sent to: state none, no ssh" bash -c 'n=$(wc -l < "$2"); "$3" --remote myremote NONE-1 x >/dev/null; [ "$("$1" NONE-1)" = "{\"state\":\"none\"}" ] && [ "$(wc -l < "$2")" = "$n" ]' _ "$RS" "$SB/ssh.log" "$S"
+check "hq status lists remote workers as remote:<name>" bash -c '"$1" status | grep -q "REM-1 *remote:myremote *active"' _ "$HQ"
+"$HQ" down >/dev/null 2>&1; "$HQ" up >/dev/null 2>&1; sleep 1
+check "hq up never opens a window for a remote row" bash -c '! tmux -L "$1" list-windows -t hq -F "#W" | grep -qx REM-1 && tmux -L "$1" list-windows -t hq -F "#W" | grep -qx MOD-1' _ "$SOCK"
+check "hq park: row only, says the remote keeps running" bash -c '"$1" park REM-1 | grep -q "does NOT stop the remote" && grep -q "REM-1.*parked" "$2"' _ "$HQ" "$RB"
+: > "$SB/stub.log"; N2="$("$RT" --new-nonce)"
+check "hq revive on a remote row sends a follow-up with the nonce and re-activates it" bash -c '"$1" revive REM-1 --nonce "$2" | grep -q "^accepted REM-1 mode=followup" && grep -q "REM-1.*active" "$3"' _ "$HQ" "$N2" "$RB"
+check "  ...the stub saw mode=followup" bash -c 'grep "$1" "$2" | grep -q "followup"' _ "$N2" "$SB/stub.log"
+check "hq revive on a remote row without --nonce sends nothing and says to post the comment first" bash -c 'n=$(wc -l < "$2"); "$1" revive REM-1 2>"$3"; rc=$?; [ "$rc" = 2 ] && grep -q "\[PM\] brief nonce=[0-9a-f]\{32\} mode=followup" "$3" && grep -q "then run: hq revive REM-1 --nonce" "$3" && [ "$(wc -l < "$2")" = "$n" ]' _ "$HQ" "$SB/stub.log" "$SB/revive.err"
+: > "$SB/stub.log"
+"$S" --remote myremote SAME-1 "x" >/dev/null
+check "two nonces for one issue in the same second get different request ids" bash -c 'a=$("$1" --nonce "$2" SAME-1 start); b=$("$1" --nonce "$3" SAME-1 start); ia=${a#*request-id=}; ia=${ia%% *}; ib=${b#*request-id=}; ib=${ib%% *}; [ -n "$ia" ] && [ "$ia" != "$ib" ] && printf "%s\n%s\n" "$a" "$b" | grep -c "^accepted" | grep -q 2' _ "$RT" "$("$RT" --new-nonce)" "$("$RT" --new-nonce)"
+refuse "a profile with an empty REMOTE_STATUS_CMD is rejected" bash -c 'sed "s|^REMOTE_STATUS_CMD=.*|REMOTE_STATUS_CMD=|" "$1" > "$2"; "$3" --remote nocmd NOCMD-1 x' _ "$RP/myremote.env" "$RP/nocmd.env" "$S"
+refuse "a REMOTE_STATUS_CMD with shell characters is rejected" bash -c 'sed "s|^REMOTE_STATUS_CMD=.*|REMOTE_STATUS_CMD=\"x;id\"|" "$1" > "$2"; "$3" --remote badcmd BADCMD-1 x' _ "$RP/myremote.env" "$RP/badcmd.env" "$S"
+refuse "a REMOTE_LABEL with odd characters is rejected" bash -c 'sed "s|^REMOTE_LABEL=.*|REMOTE_LABEL=a b|" "$1" > "$2"; "$3" --remote badlabel BADLBL-1 x' _ "$RP/myremote.env" "$RP/badlabel.env" "$S"
+refuse "a profile with an empty REMOTE_SSH is rejected" bash -c 'sed "s|^REMOTE_SSH=.*|REMOTE_SSH=|" "$1" > "$2"; "$3" --remote nossh NOSSH-1 x' _ "$RP/myremote.env" "$RP/nossh.env" "$S"
+check "reap-worker on a remote row: row only, done" bash -c '"$1" REM-1 | grep -q "nothing on the remote was touched" && grep -q "REM-1.*done" "$2"' _ "$SB/work/hq/bin/reap-worker" "$RB"
+check "docs: dispatch/checkin/review/park mention remote rows" bash -c 'cd "$1"; grep -q "remote-task" dispatch.md && grep -q "remote-status" checkin.md && grep -q "Remote rows" review.md && grep -q "does not stop the remote" park.md' _ "$SB/work/.claude/commands"
+"$HQ" config >/dev/null 2>&1
+check "docs: dispatch documents the gated exit and the nonce comment" bash -c 'grep -q "gated" "$1" && grep -q "\[PM\] brief nonce=<nonce> mode=start" "$1"' _ "$SB/work/.claude/commands/dispatch.md"
+kill "$STUB_PID" 2>/dev/null; STUB_PID=
+
 echo "autostart (launchd plist checked with plistlib; launchctl itself needs a real Mac)"
 PL="$SB/plist.xml"
 check "autostart show launchd" bash -c '"$1" autostart show launchd > "$2" 2> "$3"' _ "$HQ" "$PL" "$SB/plist.err"

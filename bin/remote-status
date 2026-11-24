@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# remote-status <ISSUE> [REQUEST-ID]     status of a remote worker's latest run: one JSON line
+# remote-status --recent <NAME>          the remote's most recent runs, one JSON line each
+# Runs the remote's status command over ssh (REMOTE_SSH, REMOTE_STATUS_CMD from the profile's remotes/<name>.env).
+# Read-only. state is one of: none | working | stuck | finished | errored (stuck = not ended and idle for over 30 minutes).
+set -euo pipefail
+_s="${BASH_SOURCE[0]}"; while [ -L "$_s" ]; do _d="$(cd "$(dirname "$_s")" && pwd)"; _s="$(readlink "$_s")"; case "$_s" in /*) ;; *) _s="$_d/$_s";; esac; done
+HQ_DIR="$(cd "$(dirname "$_s")/.." && pwd)"; . "$HQ_DIR/bin/lib.sh"; need_profile
+run_ssh() { # <remote command words...>   (REMOTE_SSH was validated by load_remote; -- ends ssh options)
+  [ -n "$REMOTE_STATUS_CMD" ] || { echo "remote-status: remote '$NAME' has no REMOTE_STATUS_CMD" >&2; exit 1; }
+  ssh -o BatchMode=yes -o ConnectTimeout=10 -- "$REMOTE_SSH" "$REMOTE_STATUS_CMD $*"
+}
+if [ "${1:-}" = --recent ]; then
+  [ $# -eq 2 ] || { echo "usage: remote-status --recent <NAME>" >&2; exit 2; }
+  NAME=$2; load_remote "$NAME"; run_ssh recent; exit
+fi
+[ $# -ge 1 ] && [ $# -le 2 ] || { echo "usage: remote-status <ISSUE> [REQUEST-ID] | --recent <NAME>" >&2; exit 2; }
+issue=$1; need_issue "$issue"
+row="$(board_row "$issue")"; [ -n "$row" ] || { echo "remote-status: $issue is not on the board" >&2; exit 1; }
+IFS=$'\t' read -r _ repo _ rid _ _ <<< "$row"
+is_remote "$repo" || { echo "remote-status: $issue is not a remote row" >&2; exit 1; }
+NAME="${repo#@}"; load_remote "$NAME"
+[ -z "${2:-}" ] || rid=$2
+if [ "$rid" = "-" ]; then echo '{"state":"none"}'; exit 0; fi   # on the board but nothing sent yet
+valid_request_id "$rid" || { echo "remote-status: invalid request id '$rid'" >&2; exit 2; }
+run_ssh status "$rid"

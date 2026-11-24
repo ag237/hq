@@ -10,6 +10,7 @@
       "Bash({{HQ_BIN}}/hq revive:*)",
       "Bash({{HQ_BIN}}/hq adopt:*)",
       "Bash({{HQ_BIN}}/spawn-worker:*)",
+      "Bash({{HQ_BIN}}/remote-status:*)",
       "Bash({{HQ_BIN}}/sync)"
     ]
   }

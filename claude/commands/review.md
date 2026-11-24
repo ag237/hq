@@ -4,6 +4,7 @@ argument-hint: <ISSUE>
 ---
 Review the work for $ARGUMENTS.
 
+0. **Remote rows** (repo `@<name>` in the board): there is no worktree. Take the PR link from the remote's `[<LABEL>] DONE <ISSUE> <PR url|none>` comment (marker and matching nonce required), read the diff with `tea pr` / the forge UI, and do steps 2-5 against that PR: the attribution check runs on the PR's commits and body. Also read the remote's report (what it changed, how it verified, backups) and check `remote-status <ISSUE>` says `finished`. `DONE ... none` means no PR: review the report only.
 1. Get the worktree/branch from `{{STATE}}/board.tsv`. Read `git -C <worktree> diff origin/HEAD...HEAD` and the PR description, and the worker's tracker comment.
 2. Check against the issue's goal and the worker rules (scope, no secrets, nothing outside the worktree, verification actually done).
 3. Attribution check (mandatory): grep the branch's commit messages (`git -C <worktree> log origin/HEAD..HEAD --format=%B`) and the PR body for `Claude-Session`, `Co-Authored-By`, `claude.ai/code` and `Generated with`. Any hit means request changes: tell the worker to rewrite the commits and PR description without them.
