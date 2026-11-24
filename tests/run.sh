@@ -151,21 +151,21 @@ check "the secret never appears in output, state, argv log or process list" bash
 check "a repeat of the same nonce reuses its request id and is reported as duplicate" bash -c '[ "$(grep -c "^duplicate REM-1 mode=start request-id=$2 " "$1")" = 2 ]' _ "$OUTF" "$(awk -F'\t' '$1=="REM-1"{print $4}' "$RB")"
 refuse "a used nonce cannot be sent for another mode" "$RT" --nonce "$NONCE" REM-1 followup
 check "stub got the same request id each time (never a new id for a nonce)" bash -c '[ "$(grep -c "\"rid\": \"$2\"" "$1")" = 3 ]' _ "$SB/stub.log" "$(awk -F'\t' '$1=="REM-1"{print $4}' "$RB")"
-"$S" --remote myremote DUP-1 "x" >/dev/null; "$RT" DUP-1 start > "$OUTF" 2>&1; RC=$?
+"$S" --remote myremote DUP-1 "x" >/dev/null; "$RT" --nonce "$("$RT" --new-nonce)" DUP-1 start > "$OUTF" 2>&1; RC=$?
 check "200 status=duplicate -> 'duplicate', exit 0" bash -c '[ "$1" = 0 ] && grep -q "^duplicate DUP-1" "$2"' _ "$RC" "$OUTF"
-"$S" --remote myremote ODD-1 "x" >/dev/null; "$RT" ODD-1 start > "$OUTF" 2>&1; RC=$?
+"$S" --remote myremote ODD-1 "x" >/dev/null; "$RT" --nonce "$("$RT" --new-nonce)" ODD-1 start > "$OUTF" 2>&1; RC=$?
 check "a 200 whose body is not status=duplicate is an error, not a duplicate" bash -c '[ "$1" = 1 ] && ! grep -q "^duplicate" "$2" && grep -q "unexpected 200" "$2"' _ "$RC" "$OUTF"
-"$S" --remote myremote GATE-1 "x" >/dev/null; "$RT" GATE-1 start > "$OUTF" 2>&1; RC=$?
+"$S" --remote myremote GATE-1 "x" >/dev/null; "$RT" --nonce "$("$RT" --new-nonce)" GATE-1 start > "$OUTF" 2>&1; RC=$?
 check "200 status=ignored -> gated, exit 6, clear message" bash -c '[ "$1" = 6 ] && grep -q "gate dropped the event" "$2"' _ "$RC" "$OUTF"
-"$S" --remote myremote RATE-1 "x" >/dev/null; "$RT" RATE-1 start > "$OUTF" 2>&1; RC=$?
+"$S" --remote myremote RATE-1 "x" >/dev/null; "$RT" --nonce "$("$RT" --new-nonce)" RATE-1 start > "$OUTF" 2>&1; RC=$?
 check "429 -> exit 4" bash -c '[ "$1" = 4 ] && grep -q "rate-limited" "$2"' _ "$RC" "$OUTF"
 printf 'other-secret' > "$SB/wrong.secret"; chmod 600 "$SB/wrong.secret"
 sed "s|^REMOTE_SECRET_FILE=.*|REMOTE_SECRET_FILE=$SB/wrong.secret|" "$RP/myremote.env" > "$RP/badsig.env"
-"$S" --remote badsig BADSIG-1 "x" >/dev/null; "$RT" BADSIG-1 start > "$OUTF" 2>&1; RC=$?
+"$S" --remote badsig BADSIG-1 "x" >/dev/null; "$RT" --nonce "$("$RT" --new-nonce)" BADSIG-1 start > "$OUTF" 2>&1; RC=$?
 check "bad signature -> 404 -> exit 3" bash -c '[ "$1" = 3 ] && grep -q "bad signature" "$2"' _ "$RC" "$OUTF"
-chmod 644 "$SB/wrong.secret"; "$RT" BADSIG-1 start > "$OUTF" 2>&1; RC=$?
+chmod 644 "$SB/wrong.secret"; "$RT" --nonce "$("$RT" --new-nonce)" BADSIG-1 start > "$OUTF" 2>&1; RC=$?
 check "a secret file readable by others is refused (exit 1) before anything is sent" bash -c '[ "$1" = 1 ] && grep -q "chmod 600" "$2"' _ "$RC" "$OUTF"
-"$S" --remote myremote FLAKY-1 "x" >/dev/null; HQ_REMOTE_RETRY_WAIT=1 "$RT" FLAKY-1 start > "$OUTF" 2>&1; RC=$?
+"$S" --remote myremote FLAKY-1 "x" >/dev/null; HQ_REMOTE_RETRY_WAIT=1 "$RT" --nonce "$("$RT" --new-nonce)" FLAKY-1 start > "$OUTF" 2>&1; RC=$?
 check "dropped connection: retried, accepted" bash -c '[ "$1" = 0 ] && grep -q "^accepted FLAKY-1" "$2"' _ "$RC" "$OUTF"
 check "retry kept the request id and body but was re-signed with a fresh timestamp" python3 -I - "$SB/stub.log" <<'PY'
 import json, sys
@@ -173,11 +173,14 @@ r = [x for x in map(json.loads, open(sys.argv[1])) if x["rid"].startswith("FLAKY
 assert [x["verdict"] for x in r] == ["dropped", "202"], r
 assert r[0]["rid"] == r[1]["rid"] and r[0]["body"] == r[1]["body"] and r[0]["ts"] != r[1]["ts"], r
 PY
-sed "s|^REMOTE_URL=.*|REMOTE_URL=http://127.0.0.1:1/webhooks/pm-task|" "$RP/myremote.env" > "$RP/down.env"
-"$S" --remote down DOWN-1 "x" >/dev/null; HQ_REMOTE_RETRY_WAIT=0 "$RT" DOWN-1 start > "$OUTF" 2>&1; RC=$?
+DEADPORT="$(python3 -I -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"   # a port nothing listens on
+sed "s|^REMOTE_URL=.*|REMOTE_URL=http://127.0.0.1:$DEADPORT/webhooks/pm-task|" "$RP/myremote.env" > "$RP/down.env"
+"$S" --remote down DOWN-1 "x" >/dev/null; HQ_REMOTE_RETRY_WAIT=0 "$RT" --nonce "$("$RT" --new-nonce)" DOWN-1 start > "$OUTF" 2>&1; RC=$?
+check "a negative HQ_REMOTE_RETRY_WAIT is clamped cleanly (no traceback)" bash -c 'out="$(HQ_REMOTE_RETRY_WAIT=-1 "$1" --nonce "$2" DOWN-1 start 2>&1)"; ! printf "%s" "$out" | grep -q Traceback' _ "$RT" "$("$RT" --new-nonce)"
 check "no connection -> exit 5" bash -c '[ "$1" = 5 ] && grep -q "no connection" "$2"' _ "$RC" "$OUTF"
-refuse "remote-task on a non-remote row is refused" "$RT" OPS-1 start
-refuse "remote-task on an unknown issue needs --remote" "$RT" NOPE-1 start
+refuse "remote-task on a non-remote row is refused" "$RT" --nonce "$NONCE" OPS-1 start
+refuse "remote-task on an unknown issue needs --remote" "$RT" --nonce "$NONCE" NOPE-1 start
+refuse "remote-task without --nonce sends nothing" bash -c 'n=$(wc -l < "$2"); "$1" REM-1 start 2>"$3"; rc=$?; [ "$rc" = 2 ] && grep -q "nonce is required" "$3" && [ "$(wc -l < "$2")" = "$n" ]; [ "$rc" != 2 ]' _ "$RT" "$SB/stub.log" "$SB/nonce.err"
 refuse "profile file with an option-like REMOTE_SSH is rejected" bash -c 'sed "s|^REMOTE_SSH=.*|REMOTE_SSH=-oProxyCommand=x|" "$1" > "$2"; "$3" --remote evil EVIL-1 x' _ "$RP/myremote.env" "$RP/evil.env" "$S"
 RS="$SB/work/hq/bin/remote-status"
 check "remote-status runs the status command over ssh with the request id" bash -c 'out="$("$1" REM-1)"; echo "$out" | grep -q "\"state\":\"working\"" && grep -qE -- "-- myremote-pm ~/bin/pm-status status REM-1-[0-9]+$" "$2"' _ "$RS" "$SB/ssh.log"

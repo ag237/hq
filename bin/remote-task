@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# remote-task [--remote NAME] [--nonce HEX32] <ISSUE> <start|followup>   ask a remote worker to work on an issue
+# remote-task [--remote NAME] --nonce HEX32 <ISSUE> <start|followup>     ask a remote worker to work on an issue
 # remote-task --new-nonce                                                print a fresh 32-hex nonce and exit
 # Sends one HMAC-signed POST to the remote's REMOTE_URL (profile: remotes/<name>.env). The secret is read from
 # REMOTE_SECRET_FILE inside python, so it never appears in argv, the environment or output.
@@ -18,10 +18,11 @@ while [ $# -gt 0 ]; do case "$1" in
   --nonce) [ $# -ge 2 ] || { echo "--nonce needs a value" >&2; exit 2; }; NONCE=$2; shift;;
   *) args+=("$1");; esac; shift; done
 set -- ${args[@]+"${args[@]}"}
-[ $# -eq 2 ] || { echo "usage: remote-task [--remote NAME] [--nonce HEX32] <ISSUE> <start|followup>" >&2; exit 2; }
+[ $# -eq 2 ] || { echo "usage: remote-task [--remote NAME] --nonce HEX32 <ISSUE> <start|followup>" >&2; exit 2; }
 issue=$1 mode=$2; need_issue "$issue"
 case "$mode" in start|followup) ;; *) echo "remote-task: mode must be start or followup" >&2; exit 2;; esac
-if [ -n "$NONCE" ]; then valid_nonce "$NONCE" || { echo "remote-task: nonce must be 32 lowercase hex characters" >&2; exit 2; }; fi
+[ -n "$NONCE" ] || { echo "remote-task: --nonce is required: post the '[PM] brief nonce=<nonce> mode=<mode>' tracker comment first (remote-task --new-nonce makes a nonce); a generated one could never match a comment" >&2; exit 2; }
+valid_nonce "$NONCE" || { echo "remote-task: nonce must be 32 lowercase hex characters" >&2; exit 2; }
 row="$(board_row "$issue")"
 if [ -n "$row" ]; then
   IFS=$'\t' read -r _ repo _ _ _ _ <<< "$row"
@@ -31,7 +32,10 @@ if [ -n "$row" ]; then
 elif [ -z "$NAME" ]; then echo "remote-task: $issue is not on the board; pass --remote NAME" >&2; exit 1
 fi
 load_remote "$NAME"
-[ -n "$NONCE" ] || NONCE="$(new_nonce)"
+case "$REMOTE_URL" in
+  http://127.0.0.1[:/]*|http://localhost[:/]*|http://\[::1\][:/]*|https://*) ;;
+  *) echo "remote-task: warning: $REMOTE_URL is plain http to a non-loopback host: the signed body is protected, but X-Request-ID and the response can be altered in transit" >&2;;
+esac
 
 # A nonce is single-use and tied to ONE request id (X-Request-ID is not signed: a new id with the same nonce would start a
 # second run). Keep nonce -> issue, mode, request id; a repeat of a nonce reuses its id (the remote answers "duplicate")
@@ -76,12 +80,14 @@ def send():
     try:
         with opener.open(req, timeout=20) as r: return r.status, r.read(65536)
     except urllib.error.HTTPError as e: return e.code, b""
+try: wait = max(0.0, float(os.environ.get("HQ_REMOTE_RETRY_WAIT", "2")))
+except ValueError: wait = 2.0
 code = text = None
 for attempt in range(3):
     try: code, text = send(); break
     except (urllib.error.URLError, OSError) as e:
         text = str(getattr(e, "reason", e))
-        if attempt < 2: time.sleep(float(os.environ.get("HQ_REMOTE_RETRY_WAIT", "2")) * (attempt + 1))
+        if attempt < 2: time.sleep(wait * (attempt + 1))
 if code is None:
     print("remote-task: no connection to the remote (%s)" % text, file=sys.stderr); sys.exit(5)
 status = ""
