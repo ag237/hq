@@ -91,7 +91,9 @@ if code == 200:
     if status == "ignored":
         print("gated %s" % rid)
         print("remote-task: the remote gate dropped the event (200 status=ignored): no run was started. Check the issue's label/state and that a [PM] comment with this nonce exists", file=sys.stderr); sys.exit(6)
-    print("duplicate %s" % rid); sys.exit(0)
+    if status == "duplicate": print("duplicate %s" % rid); sys.exit(0)
+    print("%s %s" % (code, rid))   # 200 with any other body (empty, non-JSON, an unknown status) is not a confirmed duplicate
+    print("remote-task: unexpected 200 response (body status %r): not treated as a duplicate" % status, file=sys.stderr); sys.exit(1)
 if code == 202: print("accepted %s" % rid); sys.exit(0)
 print("%s %s" % (code, rid))
 if code == 404: print("remote-task: rejected (404): bad signature or unknown route", file=sys.stderr); sys.exit(3)

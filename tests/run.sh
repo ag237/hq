@@ -153,6 +153,8 @@ refuse "a used nonce cannot be sent for another mode" "$RT" --nonce "$NONCE" REM
 check "stub got the same request id each time (never a new id for a nonce)" bash -c '[ "$(grep -c "\"rid\": \"$2\"" "$1")" = 3 ]' _ "$SB/stub.log" "$(awk -F'\t' '$1=="REM-1"{print $4}' "$RB")"
 "$S" --remote myremote DUP-1 "x" >/dev/null; "$RT" DUP-1 start > "$OUTF" 2>&1; RC=$?
 check "200 status=duplicate -> 'duplicate', exit 0" bash -c '[ "$1" = 0 ] && grep -q "^duplicate DUP-1" "$2"' _ "$RC" "$OUTF"
+"$S" --remote myremote ODD-1 "x" >/dev/null; "$RT" ODD-1 start > "$OUTF" 2>&1; RC=$?
+check "a 200 whose body is not status=duplicate is an error, not a duplicate" bash -c '[ "$1" = 1 ] && ! grep -q "^duplicate" "$2" && grep -q "unexpected 200" "$2"' _ "$RC" "$OUTF"
 "$S" --remote myremote GATE-1 "x" >/dev/null; "$RT" GATE-1 start > "$OUTF" 2>&1; RC=$?
 check "200 status=ignored -> gated, exit 6, clear message" bash -c '[ "$1" = 6 ] && grep -q "gate dropped the event" "$2"' _ "$RC" "$OUTF"
 "$S" --remote myremote RATE-1 "x" >/dev/null; "$RT" RATE-1 start > "$OUTF" 2>&1; RC=$?
@@ -192,6 +194,9 @@ check "hq revive on a remote row without --nonce sends nothing and says to post 
 : > "$SB/stub.log"
 "$S" --remote myremote SAME-1 "x" >/dev/null
 check "two nonces for one issue in the same second get different request ids" bash -c 'a=$("$1" --nonce "$2" SAME-1 start); b=$("$1" --nonce "$3" SAME-1 start); ia=${a#*request-id=}; ia=${ia%% *}; ib=${b#*request-id=}; ib=${ib%% *}; [ -n "$ia" ] && [ "$ia" != "$ib" ] && printf "%s\n%s\n" "$a" "$b" | grep -c "^accepted" | grep -q 2' _ "$RT" "$("$RT" --new-nonce)" "$("$RT" --new-nonce)"
+refuse "a profile with an empty REMOTE_STATUS_CMD is rejected" bash -c 'sed "s|^REMOTE_STATUS_CMD=.*|REMOTE_STATUS_CMD=|" "$1" > "$2"; "$3" --remote nocmd NOCMD-1 x' _ "$RP/myremote.env" "$RP/nocmd.env" "$S"
+refuse "a REMOTE_STATUS_CMD with shell characters is rejected" bash -c 'sed "s|^REMOTE_STATUS_CMD=.*|REMOTE_STATUS_CMD=\"x;id\"|" "$1" > "$2"; "$3" --remote badcmd BADCMD-1 x' _ "$RP/myremote.env" "$RP/badcmd.env" "$S"
+refuse "a REMOTE_LABEL with odd characters is rejected" bash -c 'sed "s|^REMOTE_LABEL=.*|REMOTE_LABEL=a b|" "$1" > "$2"; "$3" --remote badlabel BADLBL-1 x' _ "$RP/myremote.env" "$RP/badlabel.env" "$S"
 refuse "a profile with an empty REMOTE_SSH is rejected" bash -c 'sed "s|^REMOTE_SSH=.*|REMOTE_SSH=|" "$1" > "$2"; "$3" --remote nossh NOSSH-1 x' _ "$RP/myremote.env" "$RP/nossh.env" "$S"
 check "reap-worker on a remote row: row only, done" bash -c '"$1" REM-1 | grep -q "nothing on the remote was touched" && grep -q "REM-1.*done" "$2"' _ "$SB/work/hq/bin/reap-worker" "$RB"
 check "docs: dispatch/checkin/review/park mention remote rows" bash -c 'cd "$1"; grep -q "remote-task" dispatch.md && grep -q "remote-status" checkin.md && grep -q "Remote rows" review.md && grep -q "does not stop the remote" park.md' _ "$SB/work/.claude/commands"

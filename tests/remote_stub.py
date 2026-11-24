@@ -26,6 +26,7 @@ class H(BaseHTTPRequestHandler):
             if not ok: rec["verdict"] = "400"; self.reply(400, b"{}")
             elif b["issue"].startswith("GATE"): rec["verdict"] = "ignored"; self.reply(200, b'{"status":"ignored","reason":"script","route":"pm-task"}')
             elif b["issue"].startswith("RATE"): rec["verdict"] = "429"; self.reply(429, b"{}")
+            elif b["issue"].startswith("ODD"): rec["verdict"] = "odd200"; self.reply(200, b"not json")
             elif b["issue"].startswith("DUP"): rec["verdict"] = "duplicate"; self.reply(200, b'{"status":"duplicate"}')
             elif b["issue"].startswith("FLAKY") and rid not in seen:   # drop the first attempt: the client must retry with a fresh signature
                 seen.add(rid); rec["verdict"] = "dropped"; open(sys.argv[3], "a").write(json.dumps(rec) + "\n"); self.connection.close(); return
