@@ -61,6 +61,8 @@ if not secret:
     print("remote-task: the secret file is empty", file=sys.stderr); sys.exit(1)
 body = json.dumps({"issue": issue, "mode": mode, "nonce": nonce}, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 # rid is fixed across retries (and per nonce): the remote dedupes on it
+# Direct connection on purpose: the signed request goes to the remote itself, never through an HTTP(S)_PROXY from the environment.
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 def send():
     # Sign afresh on every attempt (same body and request id, new timestamp): the remote rejects timestamps outside +-300 s.
     ts = str(int(time.time()))
@@ -69,7 +71,7 @@ def send():
         "Content-Type": "application/json", "X-Request-ID": rid,
         "X-Webhook-Timestamp": ts, "X-Webhook-Signature-V2": sig})
     try:
-        with urllib.request.urlopen(req, timeout=20) as r: return r.status, r.read(65536)
+        with opener.open(req, timeout=20) as r: return r.status, r.read(65536)
     except urllib.error.HTTPError as e: return e.code, b""
 code = text = None
 for attempt in range(3):
