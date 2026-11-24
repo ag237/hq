@@ -22,6 +22,10 @@ echo $$ > "$LOCK/pid"; trap 'rm -rf "$LOCK"' EXIT
 git remote get-url origin >/dev/null 2>&1 || { echo "sync: no origin remote" >&2; exit 1; }
 branch="$(git branch --show-current)"; [ -n "$branch" ] || { echo "sync: detached HEAD" >&2; exit 1; }
 
+# the check-in heartbeat changes every tick: keep it untracked via the repo-local exclude (never committed, no noise)
+_real="$(cd "$SYNC_REPO" && pwd -P)"; _st="$(cd "$STATE" && pwd -P)"; _rel="${_st#"$_real"}"
+_ex="$(git rev-parse --git-path info/exclude)"; mkdir -p "$(dirname "$_ex")"
+grep -qxF "$_rel/heartbeat" "$_ex" 2>/dev/null || echo "$_rel/heartbeat" >> "$_ex"
 if [ -n "$(git status --porcelain)" ]; then
   git add -A
   # never push credentials: scan what is about to be committed (briefs and logs are free text)
