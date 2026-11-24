@@ -10,7 +10,7 @@ python3 -I - "$HQ_SRC/claude/settings.json" "$HQ_SRC/profiles/_template/settings
 import json, re, sys
 ALLOWED_BASH = [
     r"tmux list-windows(:\*)?", r"tmux list-sessions(:\*)?", r"tmux capture-pane(:\*)?",
-    r"\{\{HQ_BIN\}\}/(hq (status|find:\*|park:\*|revive:\*|adopt:\*)|spawn-worker:\*|sync)",
+    r"\{\{HQ_BIN\}\}/(hq (status|find:\*|park:\*|revive:\*|adopt:\*)|spawn-worker:\*|remote-status:\*|sync)",
 ]
 FORBIDDEN = ["curl", "wget", "ssh", "scp", "sudo", "rm ", "chmod", "chown", "bash", "sh ", "python", "eval", "kubectl", "talosctl",
              "docker", "git push", "send-keys", "kill", "Write", "Edit", "--force", "delete", "destroy", "remove", "merge"]

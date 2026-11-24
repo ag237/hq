@@ -11,6 +11,10 @@ branch="$(printf '%s' "$issue" | tr 'A-Z' 'a-z')"
 row="$(board_row "$issue")"; [ -n "$row" ] || { echo "$issue not on board" >&2; exit 1; }
 IFS=$'\t' read -r _ repo wt _ _ _ <<< "$row"
 
+if is_remote "$repo"; then
+  board_set "$issue" "done"
+  echo "reaped $issue (remote:${repo#@}; board row only, nothing on the remote was touched)"; exit 0
+fi
 if [ "$repo" != "-" ] && [ -d "$wt" ]; then
   repo_dir="$HOME_DIR/$repo"
   if [ "$force" != --force ]; then

@@ -13,7 +13,7 @@ SESSION=hq
 # State: board, briefs, logs, PM session id. Default state/<hostname>/ in the repo; set HQ_STATE_DIR to keep it elsewhere.
 HQ_HOST="${HQ_HOST:-$(hostname -s)}"
 STATE="${HQ_STATE_DIR:-$HQ_DIR/state/$HQ_HOST}"
-BOARD="$STATE/board.tsv"           # issue<TAB>repo<TAB>cwd<TAB>uuid<TAB>status<TAB>updated   (repo "-" = ops worker)
+BOARD="$STATE/board.tsv"           # issue<TAB>repo<TAB>cwd<TAB>uuid<TAB>status<TAB>updated   (repo "-" = ops worker, "@name" = remote worker)
 BRIEFS="$STATE/briefs"; LOGS="$STATE/logs"; PM_FILE="$STATE/pm.session"
 
 # Profile = what differs per environment (tracker team, repo map, extra rules).
@@ -65,6 +65,29 @@ valid_repo() { [ "$1" = "-" ] && return 0; case "$1" in ""|-*|.*|*[!A-Za-z0-9._-
 valid_name() { case "$1" in ""|*[\'\"\\\$\`\|\&\;\<\>\(\)\{\}\*\?\#\~\!]*|*[[:cntrl:]]*) return 1;; esac; [ "${#1}" -le 40 ]; }
 need_issue() { valid_issue "$1" || { echo "hq: invalid issue id '$1' (letters, digits, . _ - only; max 64)" >&2; exit 2; }; }
 need_repo() { valid_repo "$1" || { echo "hq: invalid repo name '$1' (letters, digits, . _ - only, not starting with . or -)" >&2; exit 2; }; }
+# Remote workers: a board row whose repo column is "@<name>" is run by an external agent, not in tmux. <name> selects
+# $PROFILE_DIR/remotes/<name>.env (private, per environment). Names are lowercase letters, digits and dashes.
+is_remote() { case "$1" in @*) return 0;; esac; return 1; }
+valid_remote() { case "$1" in ""|-*|*[!a-z0-9-]*) return 1;; esac; [ "${#1}" -le 40 ]; }
+need_remote() { valid_remote "$1" || { echo "hq: invalid remote name '$1' (lowercase letters, digits, - only; max 40)" >&2; exit 2; }; }
+valid_nonce() { case "$1" in *[!0-9a-f]*) return 1;; esac; [ "${#1}" -eq 32 ]; }
+valid_request_id() { case "$1" in ""|-*|*[!A-Za-z0-9._-]*) return 1;; esac; [ "${#1}" -le 100 ]; }
+# Load $PROFILE_DIR/remotes/<name>.env and check it. Sets REMOTE_URL REMOTE_SECRET_FILE REMOTE_SSH REMOTE_STATUS_CMD REMOTE_LABEL.
+# The file is shell (like profile.env) and lives in the private profile; the values are still validated before use.
+load_remote() { # <name>
+  local name=$1 f
+  need_remote "$name"
+  f="$PROFILE_DIR/remotes/$name.env"
+  [ -f "$f" ] || { echo "hq: no remote '$name' (expected $f)" >&2; exit 1; }
+  REMOTE_URL="" REMOTE_SECRET_FILE="$HQ_CONF/remotes/$name.secret" REMOTE_SSH="" REMOTE_STATUS_CMD="" REMOTE_LABEL="$name"
+  # shellcheck disable=SC1090
+  . "$f"
+  case "$REMOTE_URL" in http://?*|https://?*) ;; *) echo "hq: remote '$name': REMOTE_URL must be an http(s) URL" >&2; exit 1;; esac
+  case "$REMOTE_URL" in *[[:space:]]*) echo "hq: remote '$name': REMOTE_URL contains whitespace" >&2; exit 1;; esac
+  case "$REMOTE_SSH" in -*|*[!A-Za-z0-9._@-]*) echo "hq: remote '$name': REMOTE_SSH must be a host or ssh-config alias (letters, digits, . _ @ - only; not starting with -)" >&2; exit 1;; esac
+  case "$REMOTE_SECRET_FILE" in /*) ;; *) echo "hq: remote '$name': REMOTE_SECRET_FILE must be an absolute path" >&2; exit 1;; esac
+}
+
 q() { printf '%q' "$1"; }          # shell-quote a value that is embedded in a tmux command string
 
 # ---- portability helpers (no GNU-only tools) ----
@@ -107,6 +130,10 @@ has_window() { tm list-windows -t "$SESSION" -F '#W' 2>/dev/null | grep -qx "$1"
 board_row() { [ -s "$BOARD" ] && awk -F'\t' -v i="$1" '$1==i' "$BOARD" || true; }
 board_set() { # <issue> <status>
   awk -F'\t' -v OFS='\t' -v i="$1" -v s="$2" -v d="$(now)" '$1==i{$5=s;$6=d}1' "$BOARD" > "$BOARD.tmp" && mv "$BOARD.tmp" "$BOARD"
+}
+
+board_set_uuid() { # <issue> <uuid-or-request-id>: the uuid column holds a remote row's last X-Request-ID
+  awk -F'\t' -v OFS='\t' -v i="$1" -v u="$2" -v d="$(now)" '$1==i{$4=u;$6=d}1' "$BOARD" > "$BOARD.tmp" && mv "$BOARD.tmp" "$BOARD"
 }
 
 # Claude stores transcripts under a dir named after the cwd with non-alnum -> '-'.

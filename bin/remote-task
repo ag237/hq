@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# remote-task [--remote NAME] [--nonce HEX32] <ISSUE> <start|followup>   ask a remote worker to work on an issue
+# remote-task --new-nonce                                                print a fresh 32-hex nonce and exit
+# Sends one HMAC-signed POST to the remote's REMOTE_URL (profile: remotes/<name>.env). The secret is read from
+# REMOTE_SECRET_FILE inside python, so it never appears in argv, the environment or output.
+# Post the tracker comment "[PM] brief nonce=<nonce> mode=<mode>" BEFORE calling this (first line exactly that; mode must equal
+# this call's mode): the remote acts only on the comment whose nonce matches the one in the signed body. Nonces are single-use.
+# Exit: 0 accepted (202) or duplicate (200), 3 rejected (404: bad signature or unknown route), 4 rate-limited (429),
+#       5 no connection (3 attempts, each freshly signed), 6 gated (200 with status=ignored: no run started), 1 anything else.
+set -euo pipefail
+_s="${BASH_SOURCE[0]}"; while [ -L "$_s" ]; do _d="$(cd "$(dirname "$_s")" && pwd)"; _s="$(readlink "$_s")"; case "$_s" in /*) ;; *) _s="$_d/$_s";; esac; done
+HQ_DIR="$(cd "$(dirname "$_s")/.." && pwd)"; . "$HQ_DIR/bin/lib.sh"; need_profile
+new_nonce() { python3 -I -c 'import secrets;print(secrets.token_hex(16))'; }
+NAME="" NONCE="" args=()
+while [ $# -gt 0 ]; do case "$1" in
+  --new-nonce) new_nonce; exit 0;;
+  --remote) [ $# -ge 2 ] || { echo "--remote needs a value" >&2; exit 2; }; NAME=$2; shift;;
+  --nonce) [ $# -ge 2 ] || { echo "--nonce needs a value" >&2; exit 2; }; NONCE=$2; shift;;
+  *) args+=("$1");; esac; shift; done
+set -- ${args[@]+"${args[@]}"}
+[ $# -eq 2 ] || { echo "usage: remote-task [--remote NAME] [--nonce HEX32] <ISSUE> <start|followup>" >&2; exit 2; }
+issue=$1 mode=$2; need_issue "$issue"
+case "$mode" in start|followup) ;; *) echo "remote-task: mode must be start or followup" >&2; exit 2;; esac
+if [ -n "$NONCE" ]; then valid_nonce "$NONCE" || { echo "remote-task: nonce must be 32 lowercase hex characters" >&2; exit 2; }; fi
+row="$(board_row "$issue")"
+if [ -n "$row" ]; then
+  IFS=$'\t' read -r _ repo _ _ _ _ <<< "$row"
+  is_remote "$repo" || { echo "remote-task: $issue is not a remote row on the board (repo '$repo')" >&2; exit 1; }
+  [ -z "$NAME" ] || [ "$NAME" = "${repo#@}" ] || { echo "remote-task: $issue belongs to remote '${repo#@}', not '$NAME'" >&2; exit 1; }
+  NAME="${repo#@}"
+elif [ -z "$NAME" ]; then echo "remote-task: $issue is not on the board; pass --remote NAME" >&2; exit 1
+fi
+load_remote "$NAME"
+[ -n "$NONCE" ] || NONCE="$(new_nonce)"
+
+# A nonce is single-use and tied to ONE request id (X-Request-ID is not signed: a new id with the same nonce would start a
+# second run). Keep nonce -> issue, mode, request id; a repeat of a nonce reuses its id (the remote answers "duplicate")
+# and a repeat for another issue or mode is refused.
+NONCES="$STATE/nonces.tsv"; [ -e "$NONCES" ] || : > "$NONCES"
+prior="$(awk -F'\t' -v n="$NONCE" '$1==n{print; exit}' "$NONCES")"
+if [ -n "$prior" ]; then
+  IFS=$'\t' read -r _ p_issue p_mode rid <<< "$prior"
+  [ "$p_issue" = "$issue" ] && [ "$p_mode" = "$mode" ] || { echo "remote-task: nonce $NONCE was already used for $p_issue/$p_mode; every dispatch or follow-up needs a fresh nonce (remote-task --new-nonce) and its own [PM] comment" >&2; exit 1; }
+  echo "remote-task: nonce already sent; reusing request id $rid" >&2
+else
+  rid="$issue-$(date +%s)"
+  printf '%s\t%s\t%s\t%s\n' "$NONCE" "$issue" "$mode" "$rid" >> "$NONCES"
+fi
+rc=0
+python3 -I - "$REMOTE_URL" "$REMOTE_SECRET_FILE" "$issue" "$mode" "$NONCE" "$rid" > "$STATE/.remote-task.out" <<'PY' || rc=$?
+import hashlib, hmac, json, os, stat, sys, time, urllib.error, urllib.request
+url, secret_file, issue, mode, nonce, rid = sys.argv[1:7]
+try:
+    st = os.stat(secret_file)
+    if st.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        print("remote-task: %s must not be readable by group/others (chmod 600)" % secret_file, file=sys.stderr); sys.exit(1)
+    secret = open(secret_file, "rb").read().rstrip(b"\r\n")
+except OSError as e:
+    print("remote-task: cannot read the secret file: %s" % e.strerror, file=sys.stderr); sys.exit(1)
+if not secret:
+    print("remote-task: the secret file is empty", file=sys.stderr); sys.exit(1)
+body = json.dumps({"issue": issue, "mode": mode, "nonce": nonce}, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+# rid is fixed across retries (and per nonce): the remote dedupes on it
+def send():
+    # Sign afresh on every attempt (same body and request id, new timestamp): the remote rejects timestamps outside +-300 s.
+    ts = str(int(time.time()))
+    sig = hmac.new(secret, ts.encode() + b"." + body, hashlib.sha256).hexdigest()
+    req = urllib.request.Request(url, data=body, method="POST", headers={
+        "Content-Type": "application/json", "X-Request-ID": rid,
+        "X-Webhook-Timestamp": ts, "X-Webhook-Signature-V2": sig})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r: return r.status, r.read(65536)
+    except urllib.error.HTTPError as e: return e.code, b""
+code = text = None
+for attempt in range(3):
+    try: code, text = send(); break
+    except (urllib.error.URLError, OSError) as e:
+        text = str(getattr(e, "reason", e))
+        if attempt < 2: time.sleep(float(os.environ.get("HQ_REMOTE_RETRY_WAIT", "2")) * (attempt + 1))
+if code is None:
+    print("remote-task: no connection to the remote (%s)" % text, file=sys.stderr); sys.exit(5)
+status = ""
+if code == 200:
+    try: status = str(json.loads(text.decode("utf-8", "replace")).get("status", ""))
+    except ValueError: status = ""
+    if status == "ignored":
+        print("gated %s" % rid)
+        print("remote-task: the remote gate dropped the event (200 status=ignored): no run was started. Check the issue's label/state and that a [PM] comment with this nonce exists", file=sys.stderr); sys.exit(6)
+    print("duplicate %s" % rid); sys.exit(0)
+if code == 202: print("accepted %s" % rid); sys.exit(0)
+print("%s %s" % (code, rid))
+if code == 404: print("remote-task: rejected (404): bad signature or unknown route", file=sys.stderr); sys.exit(3)
+if code == 429: print("remote-task: rate-limited (429); wait and retry later", file=sys.stderr); sys.exit(4)
+print("remote-task: unexpected HTTP status %s" % code, file=sys.stderr); sys.exit(1)
+PY
+out="$(cat "$STATE/.remote-task.out")"; rm -f "$STATE/.remote-task.out"
+what="${out%% *}"
+[ "$rc" = 0 ] || exit "$rc"
+valid_request_id "$rid" || { echo "remote-task: internal error: bad request id" >&2; exit 1; }
+if [ -n "$row" ]; then board_set_uuid "$issue" "$rid"; board_set "$issue" active; fi
+echo "$what $issue mode=$mode request-id=$rid nonce=$NONCE"
