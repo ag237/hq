@@ -43,7 +43,10 @@ if [ -n "$prior" ]; then
   [ "$p_issue" = "$issue" ] && [ "$p_mode" = "$mode" ] || { echo "remote-task: nonce $NONCE was already used for $p_issue/$p_mode; every dispatch or follow-up needs a fresh nonce (remote-task --new-nonce) and its own [PM] comment" >&2; exit 1; }
   echo "remote-task: nonce already sent; reusing request id $rid" >&2
 else
-  rid="$issue-$(date +%s)"
+  # <ISSUE>-<epoch> is the id format of the contract; two nonces for one issue in the same second must not share it (the remote dedupes on it)
+  ep="$(date +%s)"
+  while awk -F'\t' -v r="$issue-$ep" '$4==r{f=1} END{exit !f}' "$NONCES"; do ep=$((ep + 1)); done
+  rid="$issue-$ep"
   printf '%s\t%s\t%s\t%s\n' "$NONCE" "$issue" "$mode" "$rid" >> "$NONCES"
 fi
 rc=0

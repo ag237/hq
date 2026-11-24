@@ -84,7 +84,7 @@ load_remote() { # <name>
   . "$f"
   case "$REMOTE_URL" in http://?*|https://?*) ;; *) echo "hq: remote '$name': REMOTE_URL must be an http(s) URL" >&2; exit 1;; esac
   case "$REMOTE_URL" in *[[:space:]]*) echo "hq: remote '$name': REMOTE_URL contains whitespace" >&2; exit 1;; esac
-  case "$REMOTE_SSH" in -*|*[!A-Za-z0-9._@-]*) echo "hq: remote '$name': REMOTE_SSH must be a host or ssh-config alias (letters, digits, . _ @ - only; not starting with -)" >&2; exit 1;; esac
+  case "$REMOTE_SSH" in ""|-*|*[!A-Za-z0-9._@-]*) echo "hq: remote '$name': REMOTE_SSH must be set to a host or ssh-config alias (letters, digits, . _ @ - only; not starting with -)" >&2; exit 1;; esac
   case "$REMOTE_SECRET_FILE" in /*) ;; *) echo "hq: remote '$name': REMOTE_SECRET_FILE must be an absolute path" >&2; exit 1;; esac
 }
 

@@ -188,7 +188,11 @@ check "hq park: row only, says the remote keeps running" bash -c '"$1" park REM-
 : > "$SB/stub.log"; N2="$("$RT" --new-nonce)"
 check "hq revive on a remote row sends a follow-up with the nonce and re-activates it" bash -c '"$1" revive REM-1 --nonce "$2" | grep -q "^accepted REM-1 mode=followup" && grep -q "REM-1.*active" "$3"' _ "$HQ" "$N2" "$RB"
 check "  ...the stub saw mode=followup" bash -c 'grep "$1" "$2" | grep -q "followup"' _ "$N2" "$SB/stub.log"
-check "hq revive without a nonce generates one and says where it must be posted" bash -c '"$1" revive REM-1 2>&1 >/dev/null | grep -q "\[PM\] brief nonce=<nonce> mode=followup"' _ "$HQ"
+check "hq revive on a remote row without --nonce sends nothing and says to post the comment first" bash -c 'n=$(wc -l < "$2"); "$1" revive REM-1 2>"$3"; rc=$?; [ "$rc" = 2 ] && grep -q "\[PM\] brief nonce=[0-9a-f]\{32\} mode=followup" "$3" && grep -q "then run: hq revive REM-1 --nonce" "$3" && [ "$(wc -l < "$2")" = "$n" ]' _ "$HQ" "$SB/stub.log" "$SB/revive.err"
+: > "$SB/stub.log"
+"$S" --remote myremote SAME-1 "x" >/dev/null
+check "two nonces for one issue in the same second get different request ids" bash -c 'a=$("$1" --nonce "$2" SAME-1 start); b=$("$1" --nonce "$3" SAME-1 start); ia=${a#*request-id=}; ia=${ia%% *}; ib=${b#*request-id=}; ib=${ib%% *}; [ -n "$ia" ] && [ "$ia" != "$ib" ] && printf "%s\n%s\n" "$a" "$b" | grep -c "^accepted" | grep -q 2' _ "$RT" "$("$RT" --new-nonce)" "$("$RT" --new-nonce)"
+refuse "a profile with an empty REMOTE_SSH is rejected" bash -c 'sed "s|^REMOTE_SSH=.*|REMOTE_SSH=|" "$1" > "$2"; "$3" --remote nossh NOSSH-1 x' _ "$RP/myremote.env" "$RP/nossh.env" "$S"
 check "reap-worker on a remote row: row only, done" bash -c '"$1" REM-1 | grep -q "nothing on the remote was touched" && grep -q "REM-1.*done" "$2"' _ "$SB/work/hq/bin/reap-worker" "$RB"
 check "docs: dispatch/checkin/review/park mention remote rows" bash -c 'cd "$1"; grep -q "remote-task" dispatch.md && grep -q "remote-status" checkin.md && grep -q "Remote rows" review.md && grep -q "does not stop the remote" park.md' _ "$SB/work/.claude/commands"
 "$HQ" config >/dev/null 2>&1
