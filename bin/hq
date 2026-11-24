@@ -226,7 +226,7 @@ case "${1:-up}" in
     echo; echo "== tmux =="; tm list-windows -t "$SESSION" 2>/dev/null || echo "(no session)"
     if [ -s "$BOARD" ] && awk -F'\t' '$2 ~ /^@/{f=1} END{exit !f}' "$BOARD"; then
       echo; echo "== remote (no tmux window; live state: remote-status <ISSUE>) =="
-      awk -F'\t' '$2 ~ /^@/{sub(/^@/,"",$2); printf "%s\tremote:%s\t%s\t%s\n", $1, $2, $5, $4}' "$BOARD" | column -t -s$'\t'
+      awk -F'\t' '$2 ~ /^@/{sub(/^@/,"",$2); printf "%s  remote:%s  %s  %s\n", $1, $2, $5, $4}' "$BOARD"   # plain awk: column may be absent (CI)
     fi
     echo; echo "== heartbeat =="
     if [ -s "$STATE/heartbeat" ]; then
